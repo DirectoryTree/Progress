@@ -122,7 +122,9 @@ class Run extends Model
      */
     public function finished(): bool
     {
-        return ! is_null($this->completed_at) || ! is_null($this->failed_at) || ! is_null($this->cancelled_at);
+        return ! is_null($this->failed_at)
+            || ! is_null($this->cancelled_at)
+            || ! is_null($this->completed_at);
     }
 
     /**
@@ -253,9 +255,7 @@ class Run extends Model
      */
     public function incrementProcessed(int $amount = 1): int
     {
-        return $this->incrementCounters([
-            'processed_items' => $amount,
-        ]);
+        return $this->increment('processed_items', $amount);
     }
 
     /**
@@ -263,35 +263,18 @@ class Run extends Model
      */
     public function incrementFailed(int $amount = 1): int
     {
-        return $this->incrementCounters([
-            'processed_items' => $amount,
-            'failed_items' => $amount,
-        ]);
-    }
-
-    /**
-     * Increment the given run counters.
-     *
-     * @param  array<string, int>  $counters
-     */
-    protected function incrementCounters(array $counters): int
-    {
-        $updatedAt = $this->freshTimestamp();
-
         $updated = $this->newQuery()
             ->whereKey($this)
             ->toBase()
-            ->incrementEach($counters, [
-                $this->getUpdatedAtColumn() => $this->fromDateTime($updatedAt),
+            ->incrementEach([
+                'processed_items' => $amount,
+                'failed_items' => $amount,
+            ], [
+                $this->getUpdatedAtColumn() => $this->freshTimestampString(),
             ]);
 
         if ($updated) {
-            foreach ($counters as $column => $amount) {
-                $this->{$column} += $amount;
-            }
-
-            $this->updated_at = $updatedAt;
-            $this->syncOriginalAttributes([...array_keys($counters), $this->getUpdatedAtColumn()]);
+            $this->refresh();
         }
 
         return $updated;

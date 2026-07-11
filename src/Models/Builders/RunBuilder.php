@@ -16,10 +16,11 @@ class RunBuilder extends Builder
      */
     public function active(): static
     {
-        return $this
-            ->whereNull('completed_at')
-            ->whereNull('failed_at')
-            ->whereNull('cancelled_at');
+        return $this->whereNull([
+            'failed_at',
+            'completed_at',
+            'cancelled_at',
+        ]);
     }
 
     /**
