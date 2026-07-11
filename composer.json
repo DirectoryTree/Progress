@@ -1,0 +1,57 @@
+{
+    "name": "directorytree/stride",
+    "description": "Track lifecycle, progress, and resources for long-running work in Laravel applications.",
+    "keywords": [
+        "stride",
+        "runs",
+        "tracking",
+        "progress",
+        "laravel"
+    ],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Steve Bauman"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "illuminate/database": "^11.0|^12.0",
+        "illuminate/support": "^11.0|^12.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.0",
+        "orchestra/testbench": "^9.0|^10.0",
+        "pestphp/pest": "^2.0|^3.0",
+        "pestphp/pest-plugin-laravel": "^2.0|^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "DirectoryTree\\Stride\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "DirectoryTree\\Stride\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "DirectoryTree\\Stride\\StrideServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "format": "vendor/bin/pint",
+        "test": "vendor/bin/pest"
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
