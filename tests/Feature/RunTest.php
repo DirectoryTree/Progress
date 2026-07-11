@@ -1,7 +1,6 @@
 <?php
 
 use DirectoryTree\Stride\Concerns\HasRuns;
-use DirectoryTree\Stride\Concerns\InteractsWithRun;
 use DirectoryTree\Stride\Enums\RunStatus;
 use DirectoryTree\Stride\Models\Builders\RunBuilder;
 use DirectoryTree\Stride\Models\Builders\RunItemBuilder;
@@ -9,8 +8,6 @@ use DirectoryTree\Stride\Models\Run;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Foundation\Bus\Dispatchable;
-use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -29,7 +26,11 @@ it('starts runs', function () {
 
     expect($run)
         ->status->toBe(RunStatus::Running)
-        ->started_at->not->toBeNull();
+        ->started_at->not->toBeNull()
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0)
+        ->processedItems()->toBe(0)
+        ->hasFailures()->toBeFalse();
 
     expect($run->progress())->toBe(0);
 });
@@ -39,7 +40,9 @@ it('derives statuses from lifecycle timestamps', function () {
 
     expect(Schema::hasColumn('runs', 'status'))->toBeFalse()
         ->and(Schema::hasColumn('run_items', 'status'))->toBeFalse()
-        ->and($run->status)->toBe(RunStatus::Pending);
+        ->and($run->status)->toBe(RunStatus::Pending)
+        ->and($run->processedItems())->toBe(0)
+        ->and($run->hasFailures())->toBeFalse();
 
     $run->forceFill(['started_at' => now()])->save();
 
@@ -52,6 +55,34 @@ it('tracks progress', function () {
     $run->incrementProcessed(5);
 
     expect($run->refresh()->progress())->toBe(50);
+});
+
+it('tracks indeterminate progress without a total', function () {
+    $run = Run::start();
+
+    $run->incrementProcessed(5);
+
+    expect($run->refresh())
+        ->total_items->toBeNull()
+        ->processedItems()->toBe(5)
+        ->pendingItems()->toBeNull()
+        ->progress()->toBeNull();
+});
+
+it('distinguishes an unknown total from a known empty run', function () {
+    $run = Run::start(total: 0);
+    $failedRun = Run::start(total: 0);
+    $cancelledRun = Run::start(total: 0);
+
+    $failedRun->fail();
+    $cancelledRun->cancel();
+
+    expect($run)
+        ->total_items->toBe(0)
+        ->pendingItems()->toBe(0)
+        ->progress()->toBe(0)
+        ->and($failedRun->progress())->toBe(0)
+        ->and($cancelledRun->progress())->toBe(0);
 });
 
 it('completes runs', function () {
@@ -80,19 +111,22 @@ it('records missed models', function () {
         ->status->toBe(RunStatus::Failed)
         ->resource->is($article)->toBeTrue();
 
-    expect($run->refresh())
+    expect($run)
         ->processed_items->toBe(1)
-        ->failed_items->toBe(1);
+        ->failed_items->toBe(1)
+        ->hasFailures()->toBeTrue()
+        ->and($run->fresh()->processed_items)->toBe(1)
+        ->and($run->fresh()->failed_items)->toBe(1);
 });
 
 it('starts runs with relationships and metadata', function () {
     $owner = Article::query()->create();
-    $runnable = Article::query()->create();
+    $subject = Article::query()->create();
 
     $run = Run::start(
         name: 'Import contacts',
         total: 10,
-        runnable: $runnable,
+        subject: $subject,
         owner: $owner,
         type: 'import',
         metadata: ['disk' => 'local'],
@@ -105,7 +139,7 @@ it('starts runs with relationships and metadata', function () {
         ->total_items->toBe(10)
         ->metadata->toBe(['disk' => 'local'])
         ->and($run->owner->is($owner))->toBeTrue()
-        ->and($run->runnable->is($runnable))->toBeTrue();
+        ->and($run->subject->is($subject))->toBeTrue();
 });
 
 it('increments processed items when recording models', function () {
@@ -131,6 +165,18 @@ it('can record models without incrementing processed items', function () {
         ->resource->is($article)->toBeTrue()
         ->and($run->refresh()->processed_items)->toBe(0)
         ->and($run->items)->toHaveCount(1);
+});
+
+it('records metadata without exposing run item attributes', function () {
+    $run = Run::start(total: 1);
+    $article = Article::query()->create();
+
+    $item = $run->record($article, metadata: ['source' => 'import']);
+
+    expect($item)
+        ->metadata->toBe(['source' => 'import'])
+        ->completed_at->not->toBeNull()
+        ->failed_at->toBeNull();
 });
 
 it('can record processed items without ledger entries', function () {
@@ -197,11 +243,13 @@ it('requires recorded models to be persisted', function () {
 it('queries runs by status', function () {
     Run::start()->complete();
     Run::start()->fail();
+    Run::start()->cancel();
     Run::query()->create();
 
-    expect(DB::table('runs')->count())->toBe(3)
+    expect(DB::table('runs')->count())->toBe(4)
         ->and(Run::completed()->count())->toBe(1)
         ->and(Run::failed()->count())->toBe(1)
+        ->and(Run::query()->cancelled()->count())->toBe(1)
         ->and(Run::active()->count())->toBe(1);
 });
 
@@ -215,28 +263,52 @@ it('uses custom eloquent builders', function () {
 it('adds a run relationship to models', function () {
     $article = Article::query()->create();
 
-    Run::start(runnable: $article);
+    Run::start(subject: $article);
 
     expect($article->runs)->toHaveCount(1);
 });
 
-it('clears opposing lifecycle timestamps when transitioning', function () {
+it('keeps repeated lifecycle transitions idempotent', function () {
     $run = Run::start();
 
-    $run->fail(new RuntimeException('Unable to finish'));
-    $run->complete();
+    expect($run->complete())->toBeTrue();
 
-    expect($run->refresh())
+    $completedAt = $run->completed_at;
+
+    expect($run->complete())->toBeTrue();
+
+    expect($run)
         ->status->toBe(RunStatus::Completed)
-        ->failed_at->toBeNull()
-        ->completed_at->not->toBeNull();
+        ->completed_at->toEqual($completedAt);
+});
 
-    $run->cancel();
+it('does not replace an existing terminal state', function () {
+    $run = Run::start();
 
-    expect($run->refresh())
-        ->status->toBe(RunStatus::Cancelled)
-        ->completed_at->toBeNull()
-        ->cancelled_at->not->toBeNull();
+    expect($run->fail(new RuntimeException('Unable to finish')))->toBeTrue();
+
+    $failedAt = $run->failed_at;
+
+    expect($run->complete())->toBeFalse()
+        ->and($run->cancel())->toBeFalse()
+        ->and($run->status)->toBe(RunStatus::Failed)
+        ->and($run->failed_at)->toEqual($failedAt)
+        ->and($run->completed_at)->toBeNull()
+        ->and($run->cancelled_at)->toBeNull()
+        ->and($run->exception)->toContain('Unable to finish');
+});
+
+it('synchronizes stale models with the winning terminal state', function () {
+    $run = Run::start();
+    $staleRun = $run->fresh();
+
+    expect($run->complete())->toBeTrue()
+        ->and($staleRun->fail(new RuntimeException('Unable to finish')))->toBeFalse()
+        ->and($staleRun->status)->toBe(RunStatus::Completed)
+        ->and($staleRun->completed_at)->not->toBeNull()
+        ->and($staleRun->failed_at)->toBeNull();
+
+    expect($run->refresh()->status)->toBe(RunStatus::Completed);
 });
 
 it('reports batch-like item metrics', function () {
@@ -253,43 +325,9 @@ it('reports batch-like item metrics', function () {
         ->and($run->hasFailures())->toBeFalse();
 });
 
-it('allows jobs to interact with runs', function () {
-    $run = Run::start();
-
-    $job = (new ImportContactsJob)->withRun($run);
-
-    expect($job)
-        ->runId->toBe($run->id)
-        ->runActive()->toBeTrue()
-        ->and($job->run()->is($run))->toBeTrue();
-});
-
-it('proxies withRun through pending dispatches', function () {
-    Bus::fake();
-
-    $run = Run::start();
-
-    $pending = ImportContactsJob::dispatch()->withRun($run);
-
-    expect($pending->getJob()->runId)->toBe($run->id);
-
-    unset($pending);
-
-    Bus::assertDispatched(
-        ImportContactsJob::class,
-        fn (ImportContactsJob $job) => $job->runId === $run->id,
-    );
-});
-
 class Article extends Model
 {
     use HasRuns;
 
     protected $guarded = [];
-}
-
-class ImportContactsJob
-{
-    use Dispatchable;
-    use InteractsWithRun;
 }

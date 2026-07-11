@@ -14,6 +14,16 @@ use Throwable;
 class Run extends Model
 {
     /**
+     * The model's default values for attributes.
+     *
+     * @var array<string, mixed>
+     */
+    protected $attributes = [
+        'processed_items' => 0,
+        'failed_items' => 0,
+    ];
+
+    /**
      * The attributes that aren't mass assignable.
      *
      * @var array<int, string>
@@ -54,7 +64,7 @@ class Run extends Model
         ?string $name = null,
         ?string $type = null,
         ?int $total = null,
-        ?Model $runnable = null,
+        ?Model $subject = null,
         ?Model $owner = null,
         array $metadata = [],
     ): static {
@@ -63,11 +73,11 @@ class Run extends Model
         $run->fill([
             'name' => $name,
             'type' => $type,
-            'runnable_type' => $runnable?->getMorphClass(),
-            'runnable_id' => $runnable?->getKey(),
+            'subject_type' => $subject?->getMorphClass(),
+            'subject_id' => $subject?->getKey(),
             'owner_type' => $owner?->getMorphClass(),
             'owner_id' => $owner?->getKey(),
-            'total_items' => $total ?? 0,
+            'total_items' => $total,
             'metadata' => $metadata ?: null,
             'started_at' => $run->freshTimestamp(),
         ])->save();
@@ -78,7 +88,7 @@ class Run extends Model
     /**
      * The model or process this run tracks.
      */
-    public function runnable(): MorphTo
+    public function subject(): MorphTo
     {
         return $this->morphTo();
     }
@@ -142,24 +152,32 @@ class Run extends Model
     /**
      * Get the total number of items that are still pending.
      */
-    public function pendingItems(): int
+    public function pendingItems(): ?int
     {
+        if (is_null($this->total_items)) {
+            return null;
+        }
+
         return max(0, $this->total_items - $this->processed_items);
     }
 
     /**
      * Get the percentage of items that have been processed.
      *
-     * @return int<0, 100>
+     * @return int<0, 100>|null
      */
-    public function progress(): int
+    public function progress(): ?int
     {
         if ($this->status === RunStatus::Completed) {
             return 100;
         }
 
-        if (! $this->total_items) {
-            return in_array($this->status, [RunStatus::Failed, RunStatus::Cancelled], true) ? 100 : 0;
+        if (is_null($this->total_items)) {
+            return null;
+        }
+
+        if ($this->total_items === 0) {
+            return 0;
         }
 
         return (int) min(100, round(($this->processed_items / $this->total_items) * 100));
@@ -184,11 +202,7 @@ class Run extends Model
      */
     public function complete(): bool
     {
-        return $this->forceFill([
-            'completed_at' => $this->freshTimestamp(),
-            'failed_at' => null,
-            'cancelled_at' => null,
-        ])->save();
+        return $this->transitionTo('completed_at');
     }
 
     /**
@@ -196,12 +210,9 @@ class Run extends Model
      */
     public function fail(?Throwable $exception = null): bool
     {
-        return $this->forceFill([
-            'exception' => $exception ? (string) $exception : $this->exception,
-            'failed_at' => $this->freshTimestamp(),
-            'completed_at' => null,
-            'cancelled_at' => null,
-        ])->save();
+        return $this->transitionTo('failed_at', $exception ? [
+            'exception' => (string) $exception,
+        ] : []);
     }
 
     /**
@@ -209,11 +220,32 @@ class Run extends Model
      */
     public function cancel(): bool
     {
-        return $this->forceFill([
-            'cancelled_at' => $this->freshTimestamp(),
-            'completed_at' => null,
-            'failed_at' => null,
-        ])->save();
+        return $this->transitionTo('cancelled_at');
+    }
+
+    /**
+     * Transition the run to a terminal state.
+     */
+    protected function transitionTo(string $column, array $attributes = []): bool
+    {
+        return $this->getConnection()->transaction(function () use ($column, $attributes) {
+            $run = $this->newQuery()->lockForUpdate()->findOrFail($this->getKey());
+
+            $this->setRawAttributes($run->getAttributes(), true);
+
+            if (! is_null($this->{$column})) {
+                return true;
+            }
+
+            if ($this->finished()) {
+                return false;
+            }
+
+            return $this->forceFill([
+                ...$attributes,
+                $column => $this->freshTimestamp(),
+            ])->save();
+        });
     }
 
     /**
@@ -221,26 +253,54 @@ class Run extends Model
      */
     public function incrementProcessed(int $amount = 1): int
     {
-        return $this->increment('processed_items', $amount);
+        return $this->incrementCounters([
+            'processed_items' => $amount,
+        ]);
     }
 
     /**
      * Increment the failed item count.
      */
-    public function incrementFailed(int $amount = 1): void
+    public function incrementFailed(int $amount = 1): int
     {
-        $this->newQuery()
+        return $this->incrementCounters([
+            'processed_items' => $amount,
+            'failed_items' => $amount,
+        ]);
+    }
+
+    /**
+     * Increment the given run counters.
+     *
+     * @param  array<string, int>  $counters
+     */
+    protected function incrementCounters(array $counters): int
+    {
+        $updatedAt = $this->freshTimestamp();
+
+        $updated = $this->newQuery()
             ->whereKey($this)
-            ->incrementEach([
-                'processed_items' => $amount,
-                'failed_items' => $amount,
+            ->toBase()
+            ->incrementEach($counters, [
+                $this->getUpdatedAtColumn() => $this->fromDateTime($updatedAt),
             ]);
+
+        if ($updated) {
+            foreach ($counters as $column => $amount) {
+                $this->{$column} += $amount;
+            }
+
+            $this->updated_at = $updatedAt;
+            $this->syncOriginalAttributes([...array_keys($counters), $this->getUpdatedAtColumn()]);
+        }
+
+        return $updated;
     }
 
     /**
      * Record a processed item for the run.
      */
-    public function record(?Model $item = null, array $attributes = [], bool $count = true): ?RunItem
+    public function record(?Model $item = null, array $metadata = [], bool $count = true): ?RunItem
     {
         if (! $item) {
             if ($count) {
@@ -254,13 +314,14 @@ class Run extends Model
             throw new InvalidArgumentException('Run items must be persisted Eloquent models. Use missed() to record failures without a model.');
         }
 
-        return $this->getConnection()->transaction(function () use ($item, $attributes, $count) {
+        return $this->getConnection()->transaction(function () use ($item, $metadata, $count) {
             /** @var RunItem $record */
-            $record = $this->items()->create(array_merge($attributes, [
+            $record = $this->items()->create([
+                'metadata' => $metadata ?: null,
                 'completed_at' => $this->freshTimestamp(),
                 'resource_type' => $item->getMorphClass(),
                 'resource_id' => $item->getKey(),
-            ]));
+            ]);
 
             if ($count) {
                 $this->incrementProcessed();
@@ -289,7 +350,7 @@ class Run extends Model
                 'resource_type' => $item?->getMorphClass(),
                 'resource_id' => $item?->getKey(),
                 'exception' => $exception ? (string) $exception : null,
-                'metadata' => $metadata,
+                'metadata' => $metadata ?: null,
                 'failed_at' => $this->freshTimestamp(),
             ]);
 

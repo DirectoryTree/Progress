@@ -37,4 +37,12 @@ class RunBuilder extends Builder
     {
         return $this->whereNotNull('failed_at');
     }
+
+    /**
+     * Limit the query to cancelled runs.
+     */
+    public function cancelled(): static
+    {
+        return $this->whereNotNull('cancelled_at');
+    }
 }

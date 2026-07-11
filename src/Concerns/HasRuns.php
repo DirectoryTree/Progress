@@ -12,6 +12,6 @@ trait HasRuns
      */
     public function runs(): MorphMany
     {
-        return $this->morphMany(Run::class, 'runnable');
+        return $this->morphMany(Run::class, 'subject');
     }
 }

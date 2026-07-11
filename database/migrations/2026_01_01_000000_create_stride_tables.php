@@ -15,9 +15,9 @@ return new class extends Migration
             $table->id();
             $table->string('name')->nullable();
             $table->string('type')->nullable();
-            $table->nullableMorphs('runnable');
+            $table->nullableMorphs('subject');
             $table->nullableMorphs('owner');
-            $table->unsignedBigInteger('total_items')->default(0);
+            $table->unsignedBigInteger('total_items')->nullable();
             $table->unsignedBigInteger('processed_items')->default(0);
             $table->unsignedBigInteger('failed_items')->default(0);
             $table->json('metadata')->nullable();

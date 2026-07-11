@@ -6,6 +6,8 @@ Use it for imports, exports, syncs, backfills, cleanup jobs, scheduled tasks, we
 
 ## Installation
 
+Stride requires PHP 8.2 or later and supports Laravel >= 11.
+
 Install Stride with Composer:
 
 ```bash
@@ -16,6 +18,7 @@ Publish and run the migrations:
 
 ```bash
 php artisan vendor:publish --tag=stride-migrations
+
 php artisan migrate
 ```
 
@@ -71,7 +74,7 @@ Pass the model being tracked, the owner, type, and metadata when your run needs 
 $run = Run::start(
     name: 'Sync products',
     total: $products->count(),
-    runnable: $integration,
+    subject: $integration,
     owner: $user,
     type: 'sync',
     metadata: ['source' => 'stripe'],
@@ -92,15 +95,13 @@ $run->cancel();
 
 Run statuses are derived from their lifecycle timestamps, keeping those timestamps as the single source of truth.
 
+Terminal transitions are idempotent and the first terminal state wins. Repeating the same transition returns `true` without changing its timestamp, while attempting a different terminal transition returns `false`. Start a new run when retrying failed or cancelled work.
+
 ## Progress
 
 Stride exposes batch-like progress helpers:
 
 ```php
-$run->processedItems();
-
-$run->pendingItems();
-
 $run->progress();
 
 $run->finished();
@@ -108,7 +109,33 @@ $run->finished();
 $run->cancelled();
 
 $run->hasFailures();
+
+$run->pendingItems();
+
+$run->processedItems();
 ```
+
+### Cursor-backed runs
+
+Omit the total when processing a cursor or another source whose size is unknown:
+
+```php
+$run = Run::start(name: 'Sync contacts');
+
+foreach (Contact::query()->cursor() as $contact) {
+    try {
+        $contact->syncToCrm();
+
+        $run->record($contact);
+    } catch (Throwable $exception) {
+        $run->missed($exception, item: $contact);
+    }
+}
+
+$run->complete();
+```
+
+When the total is unknown, `total_items`, `pendingItems()`, and `progress()` return `null` while the run is active. The processed and failed counters continue to update, allowing an interface to display the number processed with an indeterminate progress indicator. Once the run is completed, `progress()` returns `100`.
 
 ## Items
 
@@ -116,6 +143,12 @@ Use `record()` when a processed item maps to a persisted Eloquent model:
 
 ```php
 $run->record($contact);
+```
+
+Attach metadata when the ledger entry needs additional context:
+
+```php
+$run->record($contact, metadata: ['source' => 'import']);
 ```
 
 Use `record()` without a model when you only want aggregate progress:
@@ -129,6 +162,8 @@ Pass `count: false` when you only want the ledger entry:
 ```php
 $run->record($contact, count: false);
 ```
+
+Aggregate helpers such as `hasFailures()` reflect the parent run counters. Ledger-only entries created with `count: false` do not affect those helpers.
 
 Use `missed()` with an item when a persisted model failed:
 
@@ -144,6 +179,8 @@ $run->missed(
     metadata: ['row' => 42],
 );
 ```
+
+Every call to `record()` or `missed()` creates a distinct ledger entry. Applications that require one entry per resource should enforce idempotency before recording it.
 
 ## Relationships
 
@@ -179,37 +216,48 @@ public function operations(): MorphMany
 
 ## Jobs
 
-Queued jobs may use `InteractsWithRun` to attach and retrieve their run, similar to how Laravel jobs interact with batches:
+Pass the run into queued jobs as a normal constructor dependency:
 
 ```php
-use DirectoryTree\Stride\Concerns\InteractsWithRun;
+use DirectoryTree\Stride\Models\Run;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Queue\Queueable;
 
-class ImportContact
+class ImportContact implements ShouldQueue
 {
-    use InteractsWithRun;
+    use Queueable;
+
+    public function __construct(
+        public Run $run,
+        public array $row,
+    ) {}
 
     public function handle(): void
     {
-        if (! $this->runActive()) {
+        if (! $this->run->isActive()) {
             return;
         }
 
-        // ...
+        try {
+            $contact = Contact::create($this->row);
+
+            $this->run->record($contact);
+        } catch (Throwable $exception) {
+            $this->run->missed($exception, metadata: [
+                'row' => $this->row
+            ]);
+        }
     }
 }
 ```
 
-Attach a run before dispatching the job:
+Dispatch the job with the run and its input:
 
 ```php
-dispatch((new ImportContact($row))->withRun($run));
+ImportContact::dispatch($run, $row);
 ```
 
-Inside the job, retrieve the run:
-
-```php
-$this->run()?->record($contact);
-```
+Laravel serializes the run as an Eloquent model identifier and restores it when the job is processed.
 
 ## Querying
 
@@ -221,6 +269,8 @@ Run::active()->get();
 Run::completed()->latest()->get();
 
 Run::failed()->latest()->get();
+
+Run::query()->cancelled()->latest()->get();
 ```
 
 Run items can also be scoped:

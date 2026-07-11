@@ -35,4 +35,12 @@ abstract class TestCase extends Orchestra
             'prefix' => '',
         ]);
     }
+
+    /**
+     * Define database migrations.
+     */
+    protected function defineDatabaseMigrations(): void
+    {
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+    }
 }
