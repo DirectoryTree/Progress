@@ -28,8 +28,11 @@ return new class extends Migration
             $table->timestamp('cancelled_at')->nullable();
             $table->timestamps();
 
-            $table->index(['completed_at', 'failed_at', 'cancelled_at'], 'runs_active_index');
+            $table->index(['completed_at', 'failed_at', 'cancelled_at', 'started_at'], 'runs_active_index');
+            $table->index(['failed_at', 'created_at']);
+            $table->index(['cancelled_at', 'created_at']);
             $table->index(['type', 'created_at']);
+            $table->index('created_at');
         });
 
         Schema::create('run_items', function (Blueprint $table) {
@@ -42,8 +45,9 @@ return new class extends Migration
             $table->timestamp('failed_at')->nullable();
             $table->timestamps();
 
-            $table->index(['run_id', 'completed_at', 'failed_at'], 'run_items_status_index');
-            $table->index(['resource_type', 'resource_id', 'created_at'], 'run_items_resource_index');
+            $table->index(['run_id', 'completed_at']);
+            $table->index(['run_id', 'failed_at']);
+            $table->index(['run_id', 'created_at']);
         });
     }
 
