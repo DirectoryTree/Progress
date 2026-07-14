@@ -239,6 +239,17 @@ it('records missed items without a model', function () {
         ->and($run->failed_items)->toBe(1);
 });
 
+it('can record failed items without ledger entries', function () {
+    $run = Run::start(total: 1);
+
+    $item = $run->missed();
+
+    expect($item)->toBeNull()
+        ->and($run->refresh()->processed_items)->toBe(1)
+        ->and($run->failed_items)->toBe(1)
+        ->and($run->items)->toHaveCount(0);
+});
+
 it('can record missed items without incrementing counters', function () {
     $run = Run::start(total: 1);
 

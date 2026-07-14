@@ -323,7 +323,15 @@ class Run extends Model
         ?Model $item = null,
         array $metadata = [],
         bool $count = true,
-    ): RunItem {
+    ): ?RunItem {
+        if (! $exception && ! $item && ! $metadata) {
+            if ($count) {
+                $this->incrementFailed();
+            }
+
+            return null;
+        }
+
         if ($item && ! $item->exists) {
             throw new InvalidArgumentException('Run items must be persisted Eloquent models.');
         }
