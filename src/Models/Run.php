@@ -2,6 +2,7 @@
 
 namespace DirectoryTree\Stride\Models;
 
+use BackedEnum;
 use DirectoryTree\Stride\Enums\RunStatus;
 use DirectoryTree\Stride\Models\Builders\RunBuilder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -61,8 +62,8 @@ class Run extends Model
      * Create and start a run.
      */
     public static function start(
-        ?string $name = null,
-        ?string $type = null,
+        BackedEnum|string|null $name = null,
+        BackedEnum|string|null $type = null,
         ?int $total = null,
         ?Model $subject = null,
         ?Model $owner = null,
@@ -71,8 +72,8 @@ class Run extends Model
         $run = new static;
 
         $run->fill([
-            'name' => $name,
-            'type' => $type,
+            'name' => $name instanceof BackedEnum ? (string) $name->value : $name,
+            'type' => $type instanceof BackedEnum ? (string) $type->value : $type,
             'subject_type' => $subject?->getMorphClass(),
             'subject_id' => $subject?->getKey(),
             'owner_type' => $owner?->getMorphClass(),
@@ -114,7 +115,7 @@ class Run extends Model
      */
     public function isActive(): bool
     {
-        return in_array($this->status, [RunStatus::Pending, RunStatus::Running], true);
+        return $this->status->active();
     }
 
     /**

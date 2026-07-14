@@ -35,6 +35,17 @@ it('starts runs', function () {
     expect($run->progress())->toBe(0);
 });
 
+it('starts runs with backed enum names and types', function () {
+    $run = Run::start(
+        name: RunName::ImportContacts,
+        type: RunType::Import,
+    );
+
+    expect($run)
+        ->name->toBe('Import contacts')
+        ->type->toBe('import');
+});
+
 it('derives statuses from lifecycle timestamps', function () {
     $run = Run::query()->create();
 
@@ -47,6 +58,14 @@ it('derives statuses from lifecycle timestamps', function () {
     $run->forceFill(['started_at' => now()])->save();
 
     expect($run->status)->toBe(RunStatus::Running);
+});
+
+it('classifies active run statuses', function () {
+    expect(RunStatus::Pending->active())->toBeTrue()
+        ->and(RunStatus::Running->active())->toBeTrue()
+        ->and(RunStatus::Completed->active())->toBeFalse()
+        ->and(RunStatus::Failed->active())->toBeFalse()
+        ->and(RunStatus::Cancelled->active())->toBeFalse();
 });
 
 it('tracks progress', function () {
@@ -330,4 +349,14 @@ class Article extends Model
     use HasRuns;
 
     protected $guarded = [];
+}
+
+enum RunName: string
+{
+    case ImportContacts = 'Import contacts';
+}
+
+enum RunType: string
+{
+    case Import = 'import';
 }
