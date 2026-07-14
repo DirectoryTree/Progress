@@ -54,17 +54,63 @@ foreach ($rows as $index => $row) {
 $run->complete();
 ```
 
-Calling `record()` creates a completed `RunItem` for the model and increments the processed item count. Calling `missed()` creates a failed `RunItem`, optionally associated with a model.
+## Counters and Ledger
 
-The aggregate counters and item ledger are intentionally separate. You may count progress without storing a ledger entry, or store a ledger entry without counting it toward progress:
+Stride tracks progress and history independently:
+
+- Counters measure units of work and drive `progress()`, `pendingItems()`, and `hasFailures()`.
+- Ledger entries describe what happened to a specific resource, including its metadata or exception.
+
+The `total_items` value on a `Run` should represent the number of progress units in the run, not the number of ledger entries you expect to create. A failed item has still been processed, so failures increment both `processed_items` and `failed_items` by default.
+
+Use both counters and ledger entries when one unit of work maps to one resource. This is the recommended default.
+
+| Mode             | Successful item                        | Failed item                                              |
+| ---------------- | -------------------------------------- | -------------------------------------------------------- |
+| Count only       | `$run->record()`                       | `$run->missed()`                                         |
+| Count and ledger | `$run->record($contact)`               | `$run->missed($exception, item: $contact)`               |
+| Ledger only      | `$run->record($contact, count: false)` | `$run->missed($exception, item: $contact, count: false)` |
+
+Use count-only tracking for high-volume work where per-item history is unnecessary. The increment methods also accept an amount when progress is recorded in batches:
 
 ```php
-$run->record($contact); // Ledger entry and processed count.
+$run->incrementProcessed($successful);
 
-$run->record($contact, count: false); // Ledger entry only.
-
-$run->record(); // Processed count only.
+$run->incrementFailed($failed);
 ```
+
+Use ledger-only tracking when a resource should appear in the history but does not represent another unit of progress. For example, one imported row may count once while creating several related models:
+
+```php
+$run->record($contact);
+
+foreach ($contact->tags as $tag) {
+    $run->record($tag, count: false);
+}
+```
+
+Tracking modes can be mixed. This example counts every attempted row while retaining ledger entries only for failures:
+
+```php
+try {
+    $importer->process($row);
+
+    $run->record();
+} catch (Throwable $exception) {
+    $run->missed($exception, metadata: ['row' => $row]);
+}
+```
+
+Keep these behaviors in mind:
+
+- `incrementFailed()` increments both the processed and failed counters.
+- Ledger-only entries do not affect progress or aggregate helpers such as `hasFailures()`.
+- `record()` without a model and `missed()` without any details create no `RunItem`.
+- Passing an exception, model, or metadata to `missed()` creates a failed `RunItem`.
+- Count-only failures cannot retain a per-item exception or metadata because no ledger entry is created.
+- Counters and `$run->items()->count()` may differ intentionally.
+- Calls are not idempotent. Repeating a counting call increments the counters again, while repeating a ledger-producing call creates another `RunItem`. Queue retries require application-level idempotency.
+- Stride does not reject counters that exceed `total_items`. In that case, `progress()` remains capped at `100` and `pendingItems()` remains at `0`.
 
 ## Starting Runs
 
@@ -78,6 +124,20 @@ $run = Run::start(
     owner: $user,
     type: 'sync',
     metadata: ['source' => 'stripe'],
+);
+```
+
+The `name` and `type` arguments also accept backed enums:
+
+```php
+enum RunType: string
+{
+    case Import = 'import';
+}
+
+$run = Run::start(
+    name: 'Import contacts',
+    type: RunType::Import,
 );
 ```
 
@@ -137,7 +197,7 @@ $run->complete();
 
 When the total is unknown, `total_items`, `pendingItems()`, and `progress()` return `null` while the run is active. The processed and failed counters continue to update, allowing an interface to display the number processed with an indeterminate progress indicator. Once the run is completed, `progress()` returns `100`.
 
-## Items
+## Ledger Items
 
 Use `record()` when a processed item maps to a persisted Eloquent model:
 
@@ -150,20 +210,6 @@ Attach metadata when the ledger entry needs additional context:
 ```php
 $run->record($contact, metadata: ['source' => 'import']);
 ```
-
-Use `record()` without a model when you only want aggregate progress:
-
-```php
-$run->record();
-```
-
-Pass `count: false` when you only want the ledger entry:
-
-```php
-$run->record($contact, count: false);
-```
-
-Aggregate helpers such as `hasFailures()` reflect the parent run counters. Ledger-only entries created with `count: false` do not affect those helpers.
 
 Use `missed()` with an item when a persisted model failed:
 
@@ -179,8 +225,6 @@ $run->missed(
     metadata: ['row' => 42],
 );
 ```
-
-Every call to `record()` or `missed()` creates a distinct ledger entry. Applications that require one entry per resource should enforce idempotency before recording it.
 
 ## Relationships
 
