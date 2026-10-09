@@ -1,12 +1,36 @@
-# Stride
+<h1 align="center">Stride</h1>
+
+<p align="center">Track lifecycle, progress, and resources for long-running work in Laravel applications.</p>
+
+<p align="center">
+    <a href="https://github.com/DirectoryTree/Stride/actions/workflows/run-tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/DirectoryTree/Stride/run-tests.yml?branch=master&amp;style=flat-square" alt="Tests"></a>
+    <a href="https://packagist.org/packages/directorytree/stride"><img src="https://img.shields.io/packagist/dt/directorytree/stride.svg?style=flat-square" alt="Total Downloads"></a>
+    <a href="https://packagist.org/packages/directorytree/stride"><img src="https://img.shields.io/packagist/v/directorytree/stride.svg?style=flat-square" alt="Latest Version"></a>
+    <a href="https://github.com/DirectoryTree/Stride/blob/master/LICENSE.md"><img src="https://img.shields.io/github/license/DirectoryTree/Stride?style=flat-square" alt="License"></a>
+</p>
+
+<p align="center">
+    <a href="#installation">Installation</a>
+    <span> · </span>
+    <a href="#usage">Usage</a>
+    <span> · </span>
+    <a href="#progress">Progress</a>
+    <span> · </span>
+    <a href="#testing">Testing</a>
+</p>
+
+---
 
 Stride is an Eloquent-native ledger for tracking long-running work in Laravel applications.
 
 Use it for imports, exports, syncs, backfills, cleanup jobs, scheduled tasks, webhook replays, queued workflows, and any other process where you need to know what ran, how far it got, what failed, and which models were touched.
 
-## Installation
+## Requirements
 
-Stride requires PHP 8.2 or later and supports Laravel >= 11.
+- PHP 8.2 or higher
+- Laravel 11, 12, or 13
+
+## Installation
 
 Install Stride with Composer:
 
@@ -323,4 +347,13 @@ Run items can also be scoped:
 $run->items()->completed()->get();
 
 $run->items()->failed()->get();
+```
+
+## Testing
+
+Install the dependencies and run the test suite:
+
+```bash
+composer install
+composer test
 ```
