@@ -614,7 +614,9 @@ class RestartableJob
 {
     use SerializesModels;
 
-    public function __construct(public Run $run) {}
+    public function __construct(
+        public Run $run
+    ) {}
 }
 
 class Article extends Model

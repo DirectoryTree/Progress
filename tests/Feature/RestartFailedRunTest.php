@@ -298,7 +298,9 @@ class MiddlewareRunJob implements ShouldQueue
 {
     use Queueable;
 
-    public function __construct(public Run $run) {}
+    public function __construct(
+        public Run $run
+    ) {}
 
     public function middleware(): array
     {

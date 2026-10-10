@@ -10,7 +10,9 @@ class RestartFailedRun
     /**
      * Create a new middleware instance.
      */
-    public function __construct(public Run $run) {}
+    public function __construct(
+        public Run $run
+    ) {}
 
     /**
      * Restart a failed run before processing the job.

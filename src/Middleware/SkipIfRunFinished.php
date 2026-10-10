@@ -10,7 +10,9 @@ class SkipIfRunFinished
     /**
      * Create a new middleware instance.
      */
-    public function __construct(public Run $run) {}
+    public function __construct(
+        public Run $run
+    ) {}
 
     /**
      * Skip the job if the run has finished.
