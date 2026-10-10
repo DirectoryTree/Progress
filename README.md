@@ -348,11 +348,14 @@ Laravel serializes the run as an Eloquent model identifier and restores it when 
 
 ### Retrying jobs
 
-Add `RestartRunOnRetry` to a job that owns the run lifecycle. The middleware restarts failed runs before `handle()` executes, whether the job was retried through `queue:retry` or Horizon:
+Add `RestartFailedRun` to a job that owns the run lifecycle. It restarts a failed run before `handle()` executes. It checks the run's persisted state, so it works for jobs retried through `queue:retry` or Horizon, as well as newly dispatched jobs that receive a failed run.
+
+Pair it with `SkipIfRunFinished` when completed or cancelled runs should prevent execution:
 
 ```php
 use App\Models\Contact;
-use DirectoryTree\Stride\Middleware\RestartRunOnRetry;
+use DirectoryTree\Stride\Middleware\RestartFailedRun;
+use DirectoryTree\Stride\Middleware\SkipIfRunFinished;
 use DirectoryTree\Stride\Models\Run;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -366,7 +369,10 @@ class SyncContacts implements ShouldQueue
 
     public function middleware(): array
     {
-        return [new RestartRunOnRetry($this->run)];
+        return [
+            new RestartFailedRun($this->run),
+            new SkipIfRunFinished($this->run),
+        ];
     }
 
     public function handle(): void
@@ -387,7 +393,9 @@ class SyncContacts implements ShouldQueue
 }
 ```
 
-The middleware keeps existing progress for pending and running runs. Completed and cancelled runs skip `handle()` and are treated as processed by the queue. To execute them again, explicitly call `restart()` before dispatching the job.
+`RestartFailedRun` keeps existing progress for pending and running runs and always continues to the next middleware. It does not skip completed or cancelled runs.
+
+`SkipIfRunFinished` skips failed, completed, and cancelled runs. Place it after `RestartFailedRun` so failed runs are restarted before checking whether to skip. With both middleware registered, completed and cancelled runs skip `handle()` and are treated as processed by the queue. To execute them again, explicitly call `restart()` before dispatching the job.
 
 Include the `failed()` callback alongside the middleware. Laravel calls it when the job permanently fails, marking the run as failed so the middleware knows to restart it later. Without this callback, an exhausted job may leave its run marked as running.
 
@@ -395,9 +403,9 @@ Exceptions from `handle()` propagate to Laravel normally. Automatic queue attemp
 
 Laravel restores the job's original payload when calling `failed()`. Because restarting preserves the run ID, the restored model still refers to the same run.
 
-The middleware checks persisted state under a row lock before restarting. It releases that lock before the job executes. It does not use `$this->attempts()`, which also increases when jobs are released or retried automatically.
+`RestartFailedRun` checks persisted state under a row lock before restarting. It releases that lock before the job executes. It does not use `$this->attempts()`, which also increases when jobs are released or retried automatically.
 
-If jobs for the same run may execute concurrently, place Laravel's `WithoutOverlapping` middleware before `RestartRunOnRetry`:
+If jobs for the same run may execute concurrently, place Laravel's `WithoutOverlapping` middleware before both Stride middleware:
 
 ```php
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -406,14 +414,30 @@ public function middleware(): array
 {
     return [
         (new WithoutOverlapping('run:'.$this->run->getKey()))->shared(),
-        new RestartRunOnRetry($this->run),
+        new RestartFailedRun($this->run),
+        new SkipIfRunFinished($this->run),
     ];
 }
 ```
 
-Only the job owning the entire run should use `RestartRunOnRetry`. Child jobs that contribute progress to a shared run should not restart it independently.
+Only the job owning the entire run should use `RestartFailedRun`. Child jobs that contribute progress to a shared run should not restart it independently.
 
 Restarting discards the previous ledger and progress. It does not reverse external side effects or make the underlying work idempotent. Automatic queue attempts keep existing progress, so jobs that restart work must safely handle inputs that were already processed. Applications that resume partial work should keep checkpoints or other idempotency guarantees.
+
+### Skipping finished runs
+
+Use `SkipIfRunFinished` on its own when jobs should only execute for pending or running runs:
+
+```php
+use DirectoryTree\Stride\Middleware\SkipIfRunFinished;
+
+public function middleware(): array
+{
+    return [new SkipIfRunFinished($this->run)];
+}
+```
+
+The middleware reloads the run from the database before checking `finished()`. It skips failed, completed, and cancelled runs without resetting their state or progress.
 
 ## Querying
 

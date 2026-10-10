@@ -1,7 +1,8 @@
 <?php
 
 use DirectoryTree\Stride\Enums\RunStatus;
-use DirectoryTree\Stride\Middleware\RestartRunOnRetry;
+use DirectoryTree\Stride\Middleware\RestartFailedRun;
+use DirectoryTree\Stride\Middleware\SkipIfRunFinished;
 use DirectoryTree\Stride\Models\Run;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Schema\Blueprint;
@@ -24,7 +25,7 @@ it('restarts failed runs before handling jobs', function () {
     $job = new MiddlewareRunJob($run);
     $transactionLevel = DB::transactionLevel();
 
-    $result = (new RestartRunOnRetry($run))->handle($job, function ($command) use ($job, $transactionLevel) {
+    $result = (new RestartFailedRun($run))->handle($job, function ($command) use ($job, $transactionLevel) {
         expect($command)->toBe($job)
             ->and($command->run)
             ->status->toBe(RunStatus::Running)
@@ -52,7 +53,7 @@ it('preserves progress for pending and running runs', function (RunStatus $statu
     $run->missed(metadata: ['row' => 1]);
     $startedAt = $run->started_at;
 
-    $result = (new RestartRunOnRetry($run))->handle(new MiddlewareRunJob($run), function ($job) use ($status, $startedAt) {
+    $result = (new RestartFailedRun($run))->handle(new MiddlewareRunJob($run), function ($job) use ($status, $startedAt) {
         expect($job->run)
             ->status->toBe($status)
             ->processed_items->toBe(1)
@@ -67,18 +68,22 @@ it('preserves progress for pending and running runs', function (RunStatus $statu
         ->and($run->fresh()->status)->toBe($status);
 })->with([RunStatus::Pending, RunStatus::Running]);
 
-it('skips completed and cancelled runs using their persisted state', function (string $transition, RunStatus $status) {
+it('continues handling completed and cancelled runs without restarting them', function (string $transition, RunStatus $status) {
     $run = Run::start();
     $run->missed(metadata: ['row' => 1]);
-    $middleware = new RestartRunOnRetry($run);
+    $middleware = new RestartFailedRun($run);
 
     $run->fresh()->{$transition}();
 
-    $result = $middleware->handle(new MiddlewareRunJob($run), function () {
-        throw new RuntimeException('The job should not execute');
+    $job = new MiddlewareRunJob($run);
+
+    $result = $middleware->handle($job, function ($command) use ($job) {
+        expect($command)->toBe($job);
+
+        return 'handled';
     });
 
-    expect($result)->toBeNull()
+    expect($result)->toBe('handled')
         ->and($run)
         ->status->toBe($status)
         ->processed_items->toBe(1)
@@ -91,7 +96,7 @@ it('skips completed and cancelled runs using their persisted state', function (s
 
 it('detects failures recorded after the run was loaded', function () {
     $run = Run::start();
-    $middleware = new RestartRunOnRetry($run);
+    $middleware = new RestartFailedRun($run);
 
     $persisted = $run->fresh();
     $persisted->missed(metadata: ['row' => 1]);
@@ -114,11 +119,11 @@ it('does not reset a run again from a stale failed reference', function () {
     $staleRun = $run->fresh();
     $staleRun->load('items');
 
-    (new RestartRunOnRetry($run))->handle(new MiddlewareRunJob($run), function ($job) {
+    (new RestartFailedRun($run))->handle(new MiddlewareRunJob($run), function ($job) {
         $job->run->record();
     });
 
-    (new RestartRunOnRetry($staleRun))->handle(new MiddlewareRunJob($staleRun), function ($job) {
+    (new RestartFailedRun($staleRun))->handle(new MiddlewareRunJob($staleRun), function ($job) {
         expect($job->run)
             ->status->toBe(RunStatus::Running)
             ->processed_items->toBe(1)
@@ -135,7 +140,7 @@ it('propagates job exceptions without failing or resetting active runs', functio
     $run = Run::start();
     $run->missed(metadata: ['row' => 1]);
 
-    expect(fn () => (new RestartRunOnRetry($run))->handle(new MiddlewareRunJob($run), function ($job) {
+    expect(fn () => (new RestartFailedRun($run))->handle(new MiddlewareRunJob($run), function ($job) {
         $job->run->record();
 
         throw new RuntimeException('Unable to finish sync');
@@ -272,6 +277,23 @@ it('restarts failed runs when original payloads are pushed directly onto the que
         ->and(Run::query()->count())->toBe(1);
 });
 
+it('skips completed and cancelled jobs when both middleware are registered', function (string $transition, RunStatus $status) {
+    $run = Run::start();
+    $run->missed(metadata: ['row' => 1]);
+    $run->{$transition}();
+
+    $attributes = $run->fresh()->getAttributes();
+
+    Queue::connection('sync')->push(new MiddlewareRunJob($run));
+
+    expect($run->fresh()->getAttributes())->toBe($attributes)
+        ->and($run->fresh()->status)->toBe($status)
+        ->and($run->items)->toHaveCount(1);
+})->with([
+    'completed' => ['complete', RunStatus::Completed],
+    'cancelled' => ['cancel', RunStatus::Cancelled],
+]);
+
 class MiddlewareRunJob implements ShouldQueue
 {
     use Queueable;
@@ -280,7 +302,10 @@ class MiddlewareRunJob implements ShouldQueue
 
     public function middleware(): array
     {
-        return [new RestartRunOnRetry($this->run)];
+        return [
+            new RestartFailedRun($this->run),
+            new SkipIfRunFinished($this->run),
+        ];
     }
 
     public function handle(): void

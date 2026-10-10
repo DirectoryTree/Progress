@@ -5,7 +5,7 @@ namespace DirectoryTree\Stride\Middleware;
 use Closure;
 use DirectoryTree\Stride\Models\Run;
 
-class RestartRunOnRetry
+class SkipIfRunFinished
 {
     /**
      * Create a new middleware instance.
@@ -13,12 +13,12 @@ class RestartRunOnRetry
     public function __construct(public Run $run) {}
 
     /**
-     * Restart a failed run before processing the job.
+     * Skip the job if the run has finished.
      */
     public function handle(object $job, Closure $next): mixed
     {
-        $this->run->restartIfFailed();
+        $this->run->refresh();
 
-        return $this->run->isActive() ? $next($job) : null;
+        return $this->run->finished() ? null : $next($job);
     }
 }
