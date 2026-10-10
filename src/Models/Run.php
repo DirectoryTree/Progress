@@ -87,6 +87,52 @@ class Run extends Model
     }
 
     /**
+     * Clear the run's progress and start it again.
+     */
+    public function restart(): static
+    {
+        return $this->restartWhen();
+    }
+
+    /**
+     * Restart the run only if it has failed.
+     */
+    public function restartIfFailed(): static
+    {
+        return $this->restartWhen(RunStatus::Failed);
+    }
+
+    /**
+     * Restart the run when its persisted status matches the given status.
+     */
+    protected function restartWhen(?RunStatus $status = null): static
+    {
+        return $this->getConnection()->transaction(function () use ($status) {
+            $run = $this->newQuery()->lockForUpdate()->findOrFail($this->getKey());
+
+            $this->setRawAttributes($run->getAttributes(), true)->unsetRelations();
+
+            if (! is_null($status) && $this->status !== $status) {
+                return $this;
+            }
+
+            $this->items()->delete();
+
+            $this->forceFill([
+                'processed_items' => 0,
+                'failed_items' => 0,
+                'exception' => null,
+                'started_at' => $this->freshTimestamp(),
+                'completed_at' => null,
+                'failed_at' => null,
+                'cancelled_at' => null,
+            ])->save();
+
+            return $this;
+        });
+    }
+
+    /**
      * The model or process this run tracks.
      */
     public function subject(): MorphTo

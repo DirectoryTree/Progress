@@ -179,7 +179,25 @@ $run->cancel();
 
 Run statuses are derived from their lifecycle timestamps, keeping those timestamps as the single source of truth.
 
-Terminal transitions are idempotent and the first terminal state wins. Repeating the same transition returns `true` without changing its timestamp, while attempting a different terminal transition returns `false`. Start a new run when retrying failed or cancelled work.
+Terminal transitions are idempotent and the first terminal state wins. Repeating the same transition returns `true` without changing its timestamp, while attempting a different terminal transition returns `false`. Use `restart()` to explicitly start the run again.
+
+Restarting keeps the same run ID, name, type, total, subject, owner, and metadata:
+
+```php
+$run->restart();
+```
+
+The reset deletes the run's ledger items, clears its counters, exception, and terminal timestamps, and sets a fresh `started_at` timestamp. These changes happen in a single transaction. Previous execution history is discarded.
+
+Calling `restart()` always resets the run, even when it is already active. Stop any existing workers for the run before explicitly restarting it.
+
+Use `restartIfFailed()` to reset only a failed run:
+
+```php
+$run->restartIfFailed();
+```
+
+Both methods reload the persisted run under a row lock. `restartIfFailed()` checks that state inside the same transaction as the reset, preserving progress if another worker has already restarted the run.
 
 ## Progress
 
@@ -290,6 +308,7 @@ Pass the run into queued jobs as a normal constructor dependency:
 use DirectoryTree\Stride\Models\Run;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Throwable;
 
 class ImportContact implements ShouldQueue
 {
@@ -326,6 +345,75 @@ ImportContact::dispatch($run, $row);
 ```
 
 Laravel serializes the run as an Eloquent model identifier and restores it when the job is processed.
+
+### Retrying jobs
+
+Add `RestartRunOnRetry` to a job that owns the run lifecycle. The middleware restarts failed runs before `handle()` executes, whether the job was retried through `queue:retry` or Horizon:
+
+```php
+use App\Models\Contact;
+use DirectoryTree\Stride\Middleware\RestartRunOnRetry;
+use DirectoryTree\Stride\Models\Run;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Queue\Queueable;
+use Throwable;
+
+class SyncContacts implements ShouldQueue
+{
+    use Queueable;
+
+    public function __construct(public Run $run) {}
+
+    public function middleware(): array
+    {
+        return [new RestartRunOnRetry($this->run)];
+    }
+
+    public function handle(): void
+    {
+        foreach (Contact::query()->cursor() as $contact) {
+            $contact->syncToCrm();
+
+            $this->run->record($contact);
+        }
+
+        $this->run->complete();
+    }
+
+    public function failed(?Throwable $exception): void
+    {
+        $this->run->fail($exception);
+    }
+}
+```
+
+The middleware keeps existing progress for pending and running runs. Completed and cancelled runs skip `handle()` and are treated as processed by the queue. To execute them again, explicitly call `restart()` before dispatching the job.
+
+Include the `failed()` callback alongside the middleware. Laravel calls it when the job permanently fails, marking the run as failed so the middleware knows to restart it later. Without this callback, an exhausted job may leave its run marked as running.
+
+Exceptions from `handle()` propagate to Laravel normally. Automatic queue attempts keep using the active run, and completion remains an explicit call to `complete()`.
+
+Laravel restores the job's original payload when calling `failed()`. Because restarting preserves the run ID, the restored model still refers to the same run.
+
+The middleware checks persisted state under a row lock before restarting. It releases that lock before the job executes. It does not use `$this->attempts()`, which also increases when jobs are released or retried automatically.
+
+If jobs for the same run may execute concurrently, place Laravel's `WithoutOverlapping` middleware before `RestartRunOnRetry`:
+
+```php
+use Illuminate\Queue\Middleware\WithoutOverlapping;
+
+public function middleware(): array
+{
+    return [
+        (new WithoutOverlapping('run:'.$this->run->getKey()))->shared(),
+        new RestartRunOnRetry($this->run),
+    ];
+}
+```
+
+Only the job owning the entire run should use `RestartRunOnRetry`. Child jobs that contribute progress to a shared run should not restart it independently.
+
+Restarting discards the previous ledger and progress. It does not reverse external side effects or make the underlying work idempotent. Automatic queue attempts keep existing progress, so jobs that restart work must safely handle inputs that were already processed. Applications that resume partial work should keep checkpoints or other idempotency guarantees.
 
 ## Querying
 

@@ -8,6 +8,7 @@ use DirectoryTree\Stride\Models\Run;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -160,6 +161,260 @@ it('starts runs with relationships and metadata', function () {
         ->and($run->owner->is($owner))->toBeTrue()
         ->and($run->subject->is($subject))->toBeTrue();
 });
+
+it('restarts runs without changing their identity or configuration', function () {
+    $owner = Article::query()->create();
+    $subject = Article::query()->create();
+
+    $run = Run::start(
+        name: 'Sync contacts',
+        type: 'sync',
+        total: 2,
+        subject: $subject,
+        owner: $owner,
+        metadata: ['source' => 'crm'],
+    );
+
+    $run->record($subject);
+    $run->missed(new RuntimeException('Unable to sync contact'));
+    $run->fail(new RuntimeException('Unable to finish sync'));
+    $run->load('items');
+
+    $id = $run->getKey();
+    $createdAt = $run->created_at;
+    $startedAt = now()->subMinute();
+
+    $run->forceFill(['started_at' => $startedAt])->save();
+
+    $restarted = $run->restart();
+
+    expect($restarted)->toBe($run)
+        ->and($run->getKey())->toBe($id)
+        ->and($run->relationLoaded('items'))->toBeFalse()
+        ->and($run)
+        ->name->toBe('Sync contacts')
+        ->type->toBe('sync')
+        ->total_items->toBe(2)
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0)
+        ->metadata->toBe(['source' => 'crm'])
+        ->exception->toBeNull()
+        ->status->toBe(RunStatus::Running)
+        ->completed_at->toBeNull()
+        ->failed_at->toBeNull()
+        ->cancelled_at->toBeNull()
+        ->and($run->created_at)->toEqual($createdAt)
+        ->and($run->started_at->greaterThan($startedAt))->toBeTrue()
+        ->and($run->owner->is($owner))->toBeTrue()
+        ->and($run->subject->is($subject))->toBeTrue()
+        ->and($run->items)->toHaveCount(0)
+        ->and($run->fresh()->processed_items)->toBe(0)
+        ->and($run->fresh()->failed_items)->toBe(0)
+        ->and($run->fresh()->status)->toBe(RunStatus::Running)
+        ->and(Run::query()->count())->toBe(1)
+        ->and(DB::table('run_items')->count())->toBe(0)
+        ->and(Schema::hasColumn('runs', 'original_run_id'))->toBeFalse()
+        ->and(Schema::hasColumn('runs', 'attempt'))->toBeFalse();
+});
+
+it('restarts failed runs conditionally', function () {
+    $run = Run::start(name: 'Sync contacts', total: 2, metadata: ['source' => 'crm']);
+    $run->missed(new RuntimeException('Unable to sync contact'), metadata: ['row' => 1]);
+    $run->fail(new RuntimeException('Unable to finish sync'));
+    $run->load('items');
+
+    $id = $run->getKey();
+    $startedAt = now()->subMinute();
+    $run->forceFill(['started_at' => $startedAt])->save();
+
+    expect($run->restartIfFailed())->toBe($run)
+        ->and($run->getKey())->toBe($id)
+        ->and($run->relationLoaded('items'))->toBeFalse()
+        ->and($run)
+        ->name->toBe('Sync contacts')
+        ->total_items->toBe(2)
+        ->metadata->toBe(['source' => 'crm'])
+        ->status->toBe(RunStatus::Running)
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0)
+        ->exception->toBeNull()
+        ->failed_at->toBeNull()
+        ->and($run->started_at->greaterThan($startedAt))->toBeTrue()
+        ->and($run->items)->toHaveCount(0)
+        ->and($run->fresh()->status)->toBe(RunStatus::Running)
+        ->and(Run::query()->count())->toBe(1);
+});
+
+it('preserves non-failed runs when conditionally restarting', function (RunStatus $status) {
+    $run = Run::query()->create([
+        'started_at' => $status === RunStatus::Pending ? null : now(),
+        'completed_at' => $status === RunStatus::Completed ? now() : null,
+        'cancelled_at' => $status === RunStatus::Cancelled ? now() : null,
+    ]);
+    $run->missed(metadata: ['row' => 1]);
+
+    $attributes = $run->fresh()->getAttributes();
+
+    expect($run->restartIfFailed())->toBe($run)
+        ->and($run->getAttributes())->toBe($attributes)
+        ->and($run->fresh()->getAttributes())->toBe($attributes)
+        ->and($run->status)->toBe($status)
+        ->and($run->items)->toHaveCount(1);
+})->with([RunStatus::Pending, RunStatus::Running, RunStatus::Completed, RunStatus::Cancelled]);
+
+it('conditionally restarts using persisted failures instead of stale state', function () {
+    $run = Run::start();
+    $staleRun = $run->fresh();
+
+    $run->missed(metadata: ['row' => 1]);
+    $run->fail();
+
+    $staleRun->restartIfFailed();
+
+    expect($staleRun)
+        ->status->toBe(RunStatus::Running)
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0)
+        ->and($staleRun->items)->toHaveCount(0)
+        ->and($run->fresh()->status)->toBe(RunStatus::Running);
+});
+
+it('preserves restarted progress when conditionally restarting stale failed models', function () {
+    $run = Run::start();
+    $run->missed(metadata: ['row' => 1]);
+    $run->fail();
+
+    $staleRun = $run->fresh()->load('items');
+
+    $run->restartIfFailed();
+    $run->record();
+
+    $attributes = $run->fresh()->getAttributes();
+
+    expect($staleRun->restartIfFailed())->toBe($staleRun)
+        ->and($staleRun->getAttributes())->toBe($attributes)
+        ->and($staleRun->relationLoaded('items'))->toBeFalse()
+        ->and($staleRun->items)->toHaveCount(0)
+        ->and($run->fresh()->processed_items)->toBe(1);
+});
+
+it('restarts active and finished runs', function (?string $transition) {
+    $run = Run::start();
+
+    if ($transition) {
+        $run->{$transition}();
+    }
+
+    $run->record();
+    $run->restart();
+
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Running)
+        ->processed_items->toBe(0)
+        ->completed_at->toBeNull()
+        ->failed_at->toBeNull()
+        ->cancelled_at->toBeNull();
+})->with([null, 'complete', 'fail', 'cancel']);
+
+it('preserves unknown and empty totals when restarting', function (?int $total) {
+    $run = Run::start(total: $total);
+    $run->missed();
+    $run->fail();
+
+    $run->restart();
+
+    expect($run->refresh())
+        ->total_items->toBe($total)
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0)
+        ->metadata->toBeNull()
+        ->progress()->toBe(is_null($total) ? null : 0);
+})->with([null, 0]);
+
+it('preserves persisted configuration when restarting stale models', function () {
+    $run = Run::start(metadata: ['source' => 'crm']);
+    $staleRun = $run->fresh();
+
+    $run->forceFill([
+        'name' => 'Updated sync',
+        'total_items' => 20,
+        'metadata' => ['source' => 'backup'],
+    ])->save();
+
+    $run->missed(new RuntimeException('Unable to sync contact'));
+    $run->fail();
+
+    $staleRun->restart();
+
+    expect($staleRun->refresh())
+        ->name->toBe('Updated sync')
+        ->total_items->toBe(20)
+        ->metadata->toBe(['source' => 'backup'])
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0)
+        ->exception->toBeNull()
+        ->status->toBe(RunStatus::Running)
+        ->and($run->fresh()->status)->toBe(RunStatus::Running)
+        ->and($staleRun->items)->toHaveCount(0);
+});
+
+it('only deletes ledger items belonging to the restarted run', function () {
+    $run = Run::start();
+    $otherRun = Run::start();
+
+    $run->missed(new RuntimeException('Unable to sync contact'));
+    $otherRun->missed(new RuntimeException('Unable to sync another contact'));
+
+    $run->restart();
+
+    expect($run->items)->toHaveCount(0)
+        ->and($otherRun->items)->toHaveCount(1)
+        ->and($otherRun->fresh()->processed_items)->toBe(1)
+        ->and($otherRun->fresh()->failed_items)->toBe(1);
+});
+
+it('restores the same run from the original job payload after restarting', function () {
+    $run = Run::start(total: 2);
+    $payload = serialize(new RestartableJob($run));
+
+    $run->missed(new RuntimeException('Unable to sync contact'));
+    $run->fail();
+    $run->restart();
+
+    $job = unserialize($payload);
+
+    expect($job->run->is($run))->toBeTrue()
+        ->and($job->run)
+        ->status->toBe(RunStatus::Running)
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0)
+        ->and($job->run->items)->toHaveCount(0);
+
+    $job->run->fail(new RuntimeException('Unable to finish restarted job'));
+
+    expect($run->fresh())
+        ->status->toBe(RunStatus::Failed)
+        ->exception->toContain('Unable to finish restarted job')
+        ->and(Run::query()->count())->toBe(1);
+});
+
+it('rolls back ledger deletion when restarting fails', function (string $method) {
+    $run = Run::start();
+    $run->missed(new RuntimeException('Unable to sync contact'));
+    $run->fail();
+
+    Run::saving(function () {
+        throw new RuntimeException('Unable to save run');
+    });
+
+    expect(fn () => $run->{$method}())->toThrow(RuntimeException::class, 'Unable to save run');
+
+    expect($run->fresh())
+        ->status->toBe(RunStatus::Failed)
+        ->processed_items->toBe(1)
+        ->failed_items->toBe(1)
+        ->and($run->items()->count())->toBe(1);
+})->with(['restart', 'restartIfFailed']);
 
 it('increments processed items when recording models', function () {
     $run = Run::start(total: 1);
@@ -354,6 +609,13 @@ it('reports batch-like item metrics', function () {
         ->and($run->cancelled())->toBeFalse()
         ->and($run->hasFailures())->toBeFalse();
 });
+
+class RestartableJob
+{
+    use SerializesModels;
+
+    public function __construct(public Run $run) {}
+}
 
 class Article extends Model
 {
