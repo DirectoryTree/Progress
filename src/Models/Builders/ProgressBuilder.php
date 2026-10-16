@@ -1,18 +1,18 @@
 <?php
 
-namespace DirectoryTree\Stride\Models\Builders;
+namespace DirectoryTree\Progress\Models\Builders;
 
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * @template TModel of \DirectoryTree\Stride\Models\Run
+ * @template TModel of \DirectoryTree\Progress\Models\Progress
  *
  * @extends Builder<TModel>
  */
-class RunBuilder extends Builder
+class ProgressBuilder extends Builder
 {
     /**
-     * Limit the query to active runs.
+     * Limit the query to active progress.
      */
     public function active(): static
     {
@@ -24,7 +24,7 @@ class RunBuilder extends Builder
     }
 
     /**
-     * Limit the query to completed runs.
+     * Limit the query to completed progress.
      */
     public function completed(): static
     {
@@ -32,7 +32,7 @@ class RunBuilder extends Builder
     }
 
     /**
-     * Limit the query to failed runs.
+     * Limit the query to failed progress.
      */
     public function failed(): static
     {
@@ -40,7 +40,7 @@ class RunBuilder extends Builder
     }
 
     /**
-     * Limit the query to cancelled runs.
+     * Limit the query to cancelled progress.
      */
     public function cancelled(): static
     {

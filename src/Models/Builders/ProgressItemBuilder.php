@@ -1,15 +1,15 @@
 <?php
 
-namespace DirectoryTree\Stride\Models\Builders;
+namespace DirectoryTree\Progress\Models\Builders;
 
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * @template TModel of \DirectoryTree\Stride\Models\RunItem
+ * @template TModel of \DirectoryTree\Progress\Models\ProgressItem
  *
  * @extends Builder<TModel>
  */
-class RunItemBuilder extends Builder
+class ProgressItemBuilder extends Builder
 {
     /**
      * Limit the query to completed items.

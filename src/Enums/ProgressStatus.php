@@ -1,8 +1,8 @@
 <?php
 
-namespace DirectoryTree\Stride\Enums;
+namespace DirectoryTree\Progress\Enums;
 
-enum RunStatus: string
+enum ProgressStatus: string
 {
     case Pending = 'pending';
     case Running = 'running';
@@ -11,7 +11,7 @@ enum RunStatus: string
     case Cancelled = 'cancelled';
 
     /**
-     * Determine if the status represents an active run.
+     * Determine if the status represents an active progress.
      */
     public function active(): bool
     {

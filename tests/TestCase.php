@@ -1,8 +1,8 @@
 <?php
 
-namespace DirectoryTree\Stride\Tests;
+namespace DirectoryTree\Progress\Tests;
 
-use DirectoryTree\Stride\StrideServiceProvider;
+use DirectoryTree\Progress\ProgressServiceProvider;
 use Illuminate\Foundation\Application;
 use Orchestra\Testbench\TestCase as Orchestra;
 
@@ -17,7 +17,7 @@ abstract class TestCase extends Orchestra
     protected function getPackageProviders($app): array
     {
         return [
-            StrideServiceProvider::class,
+            ProgressServiceProvider::class,
         ];
     }
 
@@ -33,6 +33,7 @@ abstract class TestCase extends Orchestra
             'driver' => 'sqlite',
             'database' => ':memory:',
             'prefix' => '',
+            'foreign_key_constraints' => true,
         ]);
     }
 

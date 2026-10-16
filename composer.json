@@ -1,11 +1,11 @@
 {
-    "name": "directorytree/stride",
-    "description": "Track lifecycle, progress, and resources for long-running work in Laravel applications.",
+    "name": "directorytree/progress",
+    "description": "Track the progress of long-running work in Laravel applications.",
     "keywords": [
-        "stride",
-        "runs",
-        "tracking",
         "progress",
+        "tracking",
+        "jobs",
+        "queue",
         "laravel"
     ],
     "license": "MIT",
@@ -17,6 +17,7 @@
     "require": {
         "php": "^8.2",
         "illuminate/database": "^11.0|^12.0|^13.0",
+        "illuminate/queue": "^11.0|^12.0|^13.0",
         "illuminate/support": "^11.0|^12.0|^13.0"
     },
     "require-dev": {
@@ -27,18 +28,18 @@
     },
     "autoload": {
         "psr-4": {
-            "DirectoryTree\\Stride\\": "src/"
+            "DirectoryTree\\Progress\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "DirectoryTree\\Stride\\Tests\\": "tests/"
+            "DirectoryTree\\Progress\\Tests\\": "tests/"
         }
     },
     "extra": {
         "laravel": {
             "providers": [
-                "DirectoryTree\\Stride\\StrideServiceProvider"
+                "DirectoryTree\\Progress\\ProgressServiceProvider"
             ]
         }
     },
