@@ -27,7 +27,9 @@ class TrackProgress
         }
 
         if (is_null($progress->started_at)) {
-            $progress->forceFill(['started_at' => $progress->freshTimestamp()])->save();
+            $progress->forceFill([
+                'started_at' => $progress->freshTimestamp(),
+            ])->save();
         }
 
         $result = $next($job);

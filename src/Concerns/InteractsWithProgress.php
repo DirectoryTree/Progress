@@ -16,7 +16,9 @@ trait InteractsWithProgress
      */
     public function createProgress(): Progress
     {
-        return Progress::create(['name' => class_basename(static::class)]);
+        return Progress::create([
+            'name' => class_basename(static::class),
+        ]);
     }
 
     /**
