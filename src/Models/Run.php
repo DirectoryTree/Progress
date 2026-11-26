@@ -70,6 +70,10 @@ class Run extends Model
         ?Model $owner = null,
         array $metadata = [],
     ): static {
+        if ($total < 0) {
+            throw new InvalidArgumentException('The total must not be negative.');
+        }
+
         $run = new static;
 
         $run->forceFill([
@@ -359,7 +363,19 @@ class Run extends Model
             throw new InvalidArgumentException('The run must be saved before advancing it.');
         }
 
-        return $this->increment('processed_items', $amount);
+        if ($amount < 0) {
+            throw new InvalidArgumentException('The amount must not be negative.');
+        }
+
+        $updated = $this->increment('processed_items', $amount);
+
+        if ($updated === false) {
+            $this->refresh();
+
+            throw new RuntimeException('The processed item count could not be updated.');
+        }
+
+        return $updated;
     }
 
     /**
@@ -379,25 +395,12 @@ class Run extends Model
             throw new InvalidArgumentException('Run items must be persisted Eloquent models. Use missed() to record failures without a model.');
         }
 
-        return $this->getConnection()->transaction(function () use ($item, $metadata, $count) {
-            if ($count) {
-                $this->lockForCounterUpdate();
-            }
-
-            /** @var RunItem $record */
-            $record = $this->items()->create([
-                'resource_type' => $item?->getMorphClass(),
-                'resource_id' => $item?->getKey(),
-                'metadata' => $metadata ?: null,
-                'completed_at' => $this->freshTimestamp(),
-            ]);
-
-            if ($count) {
-                $this->advance();
-            }
-
-            return $record;
-        });
+        return $this->storeItem([
+            'resource_type' => $item?->getMorphClass(),
+            'resource_id' => $item?->getKey(),
+            'metadata' => $metadata ?: null,
+            'completed_at' => $this->freshTimestamp(),
+        ], $count, failed: false);
     }
 
     /**
@@ -421,26 +424,13 @@ class Run extends Model
             throw new InvalidArgumentException('Run items must be persisted Eloquent models.');
         }
 
-        return $this->getConnection()->transaction(function () use ($exception, $item, $metadata, $count) {
-            if ($count) {
-                $this->lockForCounterUpdate();
-            }
-
-            /** @var RunItem $record */
-            $record = $this->items()->create([
-                'resource_type' => $item?->getMorphClass(),
-                'resource_id' => $item?->getKey(),
-                'exception' => $exception ? (string) $exception : null,
-                'metadata' => $metadata ?: null,
-                'failed_at' => $this->freshTimestamp(),
-            ]);
-
-            if ($count) {
-                $this->incrementFailed();
-            }
-
-            return $record;
-        });
+        return $this->storeItem([
+            'resource_type' => $item?->getMorphClass(),
+            'resource_id' => $item?->getKey(),
+            'exception' => $exception ? (string) $exception : null,
+            'metadata' => $metadata ?: null,
+            'failed_at' => $this->freshTimestamp(),
+        ], $count, failed: true);
     }
 
     /**
@@ -450,6 +440,10 @@ class Run extends Model
     {
         if (! $this->exists) {
             throw new InvalidArgumentException('The run must be saved before incrementing its failure count.');
+        }
+
+        if ($amount < 0) {
+            throw new InvalidArgumentException('The amount must not be negative.');
         }
 
         $updated = $this->newQuery()
@@ -470,14 +464,45 @@ class Run extends Model
     }
 
     /**
-     * Lock the run before a ledger insert takes a shared foreign key lock.
+     * Store a ledger item and its optional counter update together.
      */
-    protected function lockForCounterUpdate(): void
+    protected function storeItem(array $attributes, bool $count, bool $failed): RunItem
     {
-        $this->newModelQuery()
-            ->whereKey($this->getKey())
-            ->lockForUpdate()
-            ->toBase()
-            ->first([$this->getKeyName()]);
+        if (! $this->exists) {
+            throw new InvalidArgumentException('The run must be saved before recording items.');
+        }
+
+        [$item, $run] = $this->getConnection()->transaction(function () use ($attributes, $count, $failed) {
+            // Lock the parent before the insert takes a shared foreign key lock.
+            $run = $count ? $this->newModelQuery()->lockForUpdate()->findOrFail($this->getKey()) : null;
+
+            $item = $this->items()->make($attributes);
+
+            if (! $item->save()) {
+                throw new RuntimeException('The run item could not be recorded.');
+            }
+
+            if ($run) {
+                $updated = $failed ? $run->incrementFailed() : $run->advance();
+
+                if (! $updated) {
+                    throw new RuntimeException('The run counters could not be updated.');
+                }
+            }
+
+            return [$item, $run];
+        });
+
+        if ($run) {
+            $this->processed_items = $run->processed_items;
+            $this->failed_items = $run->failed_items;
+
+            $this->syncOriginalAttributes([
+                'processed_items',
+                'failed_items',
+            ]);
+        }
+
+        return $item;
     }
 }

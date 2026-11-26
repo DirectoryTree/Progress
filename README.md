@@ -166,6 +166,8 @@ Keep these behaviors in mind:
 - Passing an exception, model, or metadata to `missed()` creates a failed `RunItem`.
 - Count-only failures cannot retain a per-item exception or metadata because no ledger entry is created.
 - Counters and `$run->items()->count()` may differ intentionally.
+- Ledger entries require a saved run. When an entry also counts toward progress, both writes succeed together or neither is kept.
+- Totals and counter increments may be zero but cannot be negative. Omit the total when it is unknown.
 - Calls are not idempotent. Repeating a counting call increments the counters again, while repeating a ledger-producing call creates another `RunItem`. Queue retries require application-level idempotency.
 - Progress does not reject counters that exceed `total_items`. In that case, `percentage()` remains capped at `100` and `pendingItems()` remains at `0`.
 

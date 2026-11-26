@@ -122,6 +122,23 @@ it('starts progress', function () {
     expect($run->percentage())->toBe(0);
 });
 
+it('rejects a negative total before creating a run', function () {
+    expect(fn () => Run::start(total: -1))->toThrow(InvalidArgumentException::class)
+        ->and(Run::count())->toBe(0);
+});
+
+it('rejects negative counter amounts and allows empty batches', function (string $method) {
+    $run = Run::start(total: 0);
+
+    expect(fn () => $run->{$method}(-1))->toThrow(InvalidArgumentException::class);
+    $run->{$method}(0);
+
+    expect($run->fresh())
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0)
+        ->percentage()->toBe(0);
+})->with(['advance', 'incrementFailed']);
+
 it('begins a pending run once without resetting its progress', function () {
     $run = ExtendedRun::create(['name' => 'Import contacts']);
     $item = $run->missed(metadata: ['row' => 1]);
@@ -674,6 +691,57 @@ it('requires recorded models to be persisted', function () {
 
     $run->record(new Article);
 })->throws(InvalidArgumentException::class);
+
+it('rejects ledger writes from an unsaved run with an existing ID', function (string $method) {
+    $run = Run::start();
+    $unsaved = new Run(['id' => $run->getKey()]);
+
+    expect(fn () => $unsaved->{$method}(metadata: ['row' => 1], count: false))
+        ->toThrow(InvalidArgumentException::class);
+
+    expect($run->items()->count())->toBe(0);
+})->with(['record', 'missed']);
+
+it('does not count or return a ledger entry when its creation is vetoed', function (string $method, bool $count) {
+    $run = Run::start();
+    RunItem::creating(fn () => false);
+
+    expect(fn () => $run->{$method}(metadata: ['row' => 1], count: $count))->toThrow(RuntimeException::class);
+
+    expect($run->items()->count())->toBe(0)
+        ->and($run->fresh())
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0);
+})->with(['record', 'missed'])->with([true, false]);
+
+it('rolls back a ledger entry when its counter update fails', function (string $event) {
+    $run = Run::start();
+    $run->advance(2);
+
+    if ($event === 'updating') {
+        Run::updating(fn () => false);
+    } else {
+        Run::updated(fn () => throw new RuntimeException('Counter update failed.'));
+    }
+
+    expect(fn () => $run->record(metadata: ['row' => 1]))->toThrow(RuntimeException::class);
+
+    expect($run->processedItems())->toBe(2)
+        ->and($run->fresh()->processedItems())->toBe(2)
+        ->and($run->items()->count())->toBe(0);
+})->with(['updating', 'updated']);
+
+it('does not retain a missed item if the counter update affects no rows', function () {
+    $run = ExtendedRun::start();
+    ExtendedRun::addGlobalScope('pending', fn ($query) => $query->whereNull('started_at'));
+
+    expect(fn () => $run->missed(metadata: ['row' => 1]))->toThrow(RuntimeException::class);
+
+    expect($run->items()->count())->toBe(0)
+        ->and($run->fresh())
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0);
+});
 
 it('queries progress by status', function () {
     Run::start()->complete();
