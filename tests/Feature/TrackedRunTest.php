@@ -37,7 +37,7 @@ it('attaches a pending progress before serializing the job', function () {
         ->and($restored->run->is($run))->toBeTrue()
         ->and($restored->middleware)->toBe([TrackRun::class])
         ->and($payload['data']['command'])->toContain('ModelIdentifier')
-        ->and($payload['progress'])->toBe([
+        ->and($payload['progress_run'])->toBe([
             'class' => Run::class,
             'id' => $run->getKey(),
             'connection' => 'testing',
@@ -47,6 +47,28 @@ it('attaches a pending progress before serializing the job', function () {
 
     expect($job->middleware)->toBe([TrackRun::class])
         ->and(Run::count())->toBe(1);
+});
+
+it('does not enqueue a tracked job when run creation is vetoed', function () {
+    Run::creating(fn () => false);
+
+    $job = new TrackedRunJob;
+
+    expect(fn () => Queue::connection('database')->push($job))
+        ->toThrow(RuntimeException::class, 'The run must be saved before dispatching a tracked job.');
+
+    expect($job->getRun())->toBeNull()
+        ->and(Run::count())->toBe(0)
+        ->and(DB::table('jobs')->count())->toBe(0);
+});
+
+it('does not enqueue a tracked job with an explicitly attached unsaved run', function () {
+    $job = (new TrackedRunJob)->setRun(new Run);
+
+    expect(fn () => Queue::connection('database')->push($job))
+        ->toThrow(RuntimeException::class, 'The run must be saved before dispatching a tracked job.');
+
+    expect(DB::table('jobs')->count())->toBe(0);
 });
 
 it('automatically starts and completes progress on the sync queue', function () {
@@ -522,13 +544,28 @@ it('fails pending progress when queue attempts are exhausted before handling', f
 
 it('does not replace missing progress exceptions with failure listener errors', function () {
     $run = Run::create();
+    Queue::connection('database')->push((new TrackedRunJob)->setRun($run));
+
     $run->delete();
 
-    expect(fn () => Queue::connection('sync')->push((new TrackedRunJob)->setRun($run)))
+    expect(fn () => Queue::connection('database')->pop()->fire())
         ->toThrow(ModelNotFoundException::class);
 
     expect(Run::count())->toBe(0)
         ->and(config('progress-testing.status'))->toBeNull();
+});
+
+it('ignores unrelated progress metadata when an untracked job fails', function () {
+    Queue::createPayloadUsing(fn () => ['progress' => ['percent' => 50]]);
+    config(['progress-testing.action' => 'throw']);
+
+    $run = Run::start();
+    $job = (new ManuallyTrackedRunJob)->setRun($run);
+
+    expect(fn () => Queue::connection('sync')->push($job))
+        ->toThrow(RuntimeException::class, 'Unmanaged failure');
+
+    expect($run->fresh()->status)->toBe(RunStatus::Running);
 });
 
 it('does not manage progress without the opt-in interface', function () {

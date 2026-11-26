@@ -8,6 +8,7 @@ use DirectoryTree\Progress\Models\Run;
 use Illuminate\Contracts\Queue\Job;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
+use RuntimeException;
 use WeakMap;
 
 class RunTracker
@@ -40,6 +41,10 @@ class RunTracker
 
         $run = $job->getRun() ?? $job->createRun();
 
+        if (! $run->exists) {
+            throw new RuntimeException('The run must be saved before dispatching a tracked job.');
+        }
+
         $job->setRun($run);
 
         if (! in_array(TrackRun::class, $job->middleware ?? [], true)) {
@@ -47,7 +52,7 @@ class RunTracker
         }
 
         return [
-            'progress' => [
+            'progress_run' => [
                 'class' => $run::class,
                 'id' => $run->getKey(),
                 'connection' => $run->getConnectionName(),
@@ -84,7 +89,7 @@ class RunTracker
     {
         unset($this->runs[$event->job]);
 
-        $run = $event->job->payload()['progress'] ?? null;
+        $run = $event->job->payload()['progress_run'] ?? null;
 
         if (! $run) {
             return;

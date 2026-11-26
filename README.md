@@ -429,7 +429,7 @@ public function createRun(): Run
 }
 ```
 
-This method runs when the queue payload is created, usually in the process dispatching the job. Return a saved `Run` or a subclass, and leave `started_at` unset to keep it pending until execution. Its model class, ID, and database connection are included under the `progress` key in queue payload metadata, including for encrypted jobs, so terminal failures can be recorded without deserializing the job again.
+This method runs when the queue payload is created, usually in the process dispatching the job. Return a saved `Run` or a subclass, and leave `started_at` unset to keep it pending until execution. Its model class, ID, and database connection are included under the `progress_run` key in queue payload metadata, including for encrypted jobs, so terminal failures can be recorded without deserializing the job again.
 
 Progress appends its middleware without replacing your `middleware()` method or middleware registered with `through()`. Your middleware runs first, so overlap locks and rate limits can prevent execution before the package starts or restarts tracking:
 
