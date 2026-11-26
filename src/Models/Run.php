@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use InvalidArgumentException;
+use RuntimeException;
 use Throwable;
 
 class Run extends Model
@@ -71,7 +72,7 @@ class Run extends Model
     ): static {
         $run = new static;
 
-        $run->fill([
+        $run->forceFill([
             'name' => $name instanceof BackedEnum ? (string) $name->value : $name,
             'type' => $type instanceof BackedEnum ? (string) $type->value : $type,
             'subject_type' => $subject?->getMorphClass(),
@@ -84,6 +85,34 @@ class Run extends Model
         ])->save();
 
         return $run;
+    }
+
+    /**
+     * Begin a pending run, or continue an already running one.
+     */
+    public function begin(): bool
+    {
+        return $this->getConnection()->transaction(function () {
+            $run = $this->newQuery()->lockForUpdate()->findOrFail($this->getKey());
+
+            $this->setRawAttributes($run->getAttributes(), true);
+
+            if ($this->finished()) {
+                return false;
+            }
+
+            if (! is_null($this->started_at)) {
+                return true;
+            }
+
+            if (! $this->forceFill(['started_at' => $this->freshTimestamp()])->save()) {
+                $this->setRawAttributes($run->getAttributes(), true);
+
+                throw new RuntimeException('The run could not be started.');
+            }
+
+            return true;
+        });
     }
 
     /**
@@ -126,7 +155,13 @@ class Run extends Model
                 'completed_at' => null,
                 'failed_at' => null,
                 'cancelled_at' => null,
-            ])->save();
+            ]);
+
+            if (! $this->save()) {
+                $this->setRawAttributes($run->getAttributes(), true);
+
+                throw new RuntimeException('The run could not be restarted.');
+            }
 
             return $this;
         });

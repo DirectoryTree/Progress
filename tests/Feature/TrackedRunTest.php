@@ -60,6 +60,19 @@ it('automatically starts and completes progress on the sync queue', function () 
         ->and(config('progress-testing.status'))->toBe(RunStatus::Running);
 });
 
+it('does not handle a tracked job if beginning its run is vetoed', function () {
+    Run::updating(fn (Run $run) => ! $run->isDirty('started_at'));
+
+    expect(fn () => TrackedRunJob::dispatchSync())
+        ->toThrow(RuntimeException::class, 'The run could not be started.');
+
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Failed)
+        ->started_at->toBeNull()
+        ->processed_items->toBe(0)
+        ->and(config('progress-testing.status'))->toBeNull();
+});
+
 it('only creates progress for unique jobs that are actually dispatched', function () {
     config([
         'cache.default' => 'array',

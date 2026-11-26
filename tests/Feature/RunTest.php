@@ -115,6 +115,37 @@ it('starts progress', function () {
     expect($run->percentage())->toBe(0);
 });
 
+it('begins a pending run once without resetting its progress', function () {
+    $run = ExtendedRun::create(['name' => 'Import contacts']);
+    $item = $run->missed(metadata: ['row' => 1]);
+    $stale = $run->fresh();
+
+    expect($run->begin())->toBeTrue();
+
+    $startedAt = $run->fresh()->started_at;
+
+    ExtendedRun::updating(fn () => throw new RuntimeException('Unexpected second update'));
+
+    expect($stale->begin())->toBeTrue()
+        ->and($stale->status)->toBe(RunStatus::Running)
+        ->and($stale->started_at)->toEqual($startedAt)
+        ->and($stale->fresh())
+        ->processed_items->toBe(1)
+        ->failed_items->toBe(1)
+        ->and($stale->items()->sole()->is($item))->toBeTrue();
+});
+
+it('does not begin a run that has since finished', function (string $transition) {
+    $run = Run::start();
+    $stale = $run->fresh();
+    $run->{$transition}();
+    $before = $run->fresh()->getAttributes();
+
+    expect($stale->begin())->toBeFalse()
+        ->and($stale->getAttributes())->toBe($before)
+        ->and($stale->fresh()->getAttributes())->toBe($before);
+})->with(['complete', 'fail', 'cancel']);
+
 it('starts progress with backed enum names and types', function () {
     $run = Run::start(
         name: RunName::ImportContacts,
@@ -218,11 +249,11 @@ it('records missed models', function () {
         ->and($run->fresh()->failed_items)->toBe(1);
 });
 
-it('starts progress with relationships and metadata', function () {
+it('starts progress with relationships and metadata', function (string $model) {
     $owner = Article::query()->create();
     $subject = Article::query()->create();
 
-    $run = Run::start(
+    $run = $model::start(
         name: 'Import contacts',
         total: 10,
         subject: $subject,
@@ -231,7 +262,7 @@ it('starts progress with relationships and metadata', function () {
         metadata: ['disk' => 'local'],
     );
 
-    expect($run)
+    expect($run->refresh())
         ->name->toBe('Import contacts')
         ->type->toBe('import')
         ->status->toBe(RunStatus::Running)
@@ -239,7 +270,10 @@ it('starts progress with relationships and metadata', function () {
         ->metadata->toBe(['disk' => 'local'])
         ->and($run->owner->is($owner))->toBeTrue()
         ->and($run->subject->is($subject))->toBeTrue();
-});
+})->with([
+    'base model' => [Run::class],
+    'guarded subclass' => [ExtendedRun::class],
+]);
 
 it('restarts progress without changing their identity or configuration', function () {
     $owner = Article::query()->create();
@@ -495,6 +529,23 @@ it('rolls back ledger deletion when restarting fails', function (string $method)
         ->and($run->items()->count())->toBe(1);
 })->with(['restart', 'restartIfFailed']);
 
+it('preserves the run and its ledger when an observer vetoes a restart', function (string $method) {
+    $run = Run::start();
+    $item = $run->missed(metadata: ['row' => 1]);
+    $run->fail();
+
+    Run::updating(fn () => false);
+
+    expect(fn () => $run->{$method}())->toThrow(RuntimeException::class, 'The run could not be restarted.');
+
+    expect($run->status)->toBe(RunStatus::Failed)
+        ->and($run->fresh())
+        ->status->toBe(RunStatus::Failed)
+        ->processed_items->toBe(1)
+        ->failed_items->toBe(1)
+        ->and($run->items()->sole()->is($item))->toBeTrue();
+})->with(['restart', 'restartIfFailed']);
+
 it('increments processed items when recording models', function () {
     $run = Run::start(total: 1);
     $article = Article::query()->create();
@@ -708,6 +759,8 @@ class Article extends Model
 class ExtendedRun extends Run
 {
     protected $table = 'runs';
+
+    protected $fillable = ['name'];
 }
 
 enum RunName: string

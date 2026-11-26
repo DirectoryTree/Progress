@@ -22,14 +22,8 @@ class TrackRun
     {
         $run = $job->getRun()->restartIfFailed();
 
-        if ($run->finished()) {
+        if (! $run->begin()) {
             return null;
-        }
-
-        if (is_null($run->started_at)) {
-            $run->forceFill([
-                'started_at' => $run->freshTimestamp(),
-            ])->save();
         }
 
         $result = $next($job);

@@ -199,6 +199,19 @@ $run = Run::start(
 
 ## Lifecycle
 
+`Run::start()` creates a run that is already running. To create the run before work begins, use `Run::create()` and call `begin()` on that same record when processing starts:
+
+```php
+$run = Run::create(['name' => 'Import contacts']);
+
+// When the worker is ready to process the import:
+if (! $run->begin()) {
+    return;
+}
+```
+
+`begin()` sets `started_at` once. It returns `true` for pending or already running runs without resetting counters or ledger entries, and `false` for completed, failed, or cancelled runs. Jobs using `TracksRun` call it automatically.
+
 Runs can be completed, failed, or cancelled:
 
 ```php
@@ -445,7 +458,7 @@ class ImportContact implements ShouldQueue
 
     public function handle(): void
     {
-        if (! $this->run->isActive()) {
+        if (! $this->run->begin()) {
             return;
         }
 
@@ -465,6 +478,8 @@ class ImportContact implements ShouldQueue
 Dispatch the job with the run and its input:
 
 ```php
+$run = Run::create(['name' => 'Import contact']);
+
 ImportContact::dispatch($run, $row);
 ```
 
