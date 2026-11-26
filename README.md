@@ -251,18 +251,26 @@ $run->percentage(); // ?int
 
 $run->isFinished(); // bool
 
+$run->isCompleted(); // bool
+
 $run->isCancelled(); // bool
 
 $run->isFailed(); // bool
 
 $run->hasFailures(); // bool
 
+$run->totalItems(); // ?int
+
 $run->pendingItems(); // ?int
 
 $run->processedItems(); // int
+
+$run->failedItems(); // int
 ```
 
-`isFailed()` describes the run itself. `hasFailures()` checks its failed-item counter, so a completed run can still have failures.
+`isFinished()` includes completed, failed, and cancelled runs. `isCompleted()` only checks for completion: a completed run can still have failed items. `isFailed()` describes the run itself; `failedItems()` and `hasFailures()` read its failed-item counter, not its ledger.
+
+`totalItems()` returns `null` when the total is unknown and `0` when the run is known to have no items.
 
 ### Cursor-backed runs
 

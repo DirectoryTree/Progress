@@ -62,6 +62,7 @@ it('counts failures as part of a batch without creating ledger entries', functio
     expect($run->refresh())
         ->processed_items->toBe(14)
         ->failed_items->toBe(6)
+        ->failedItems()->toBe(6)
         ->and($run->items()->count())->toBe(0);
 });
 
@@ -226,6 +227,7 @@ it('derives run status from lifecycle timestamps', function () {
 
     expect(Schema::hasColumn('runs', 'status'))->toBeFalse()
         ->and($run->status)->toBe(RunStatus::Pending)
+        ->and($run->isCompleted())->toBeFalse()
         ->and($run->processedItems())->toBe(0)
         ->and($run->hasFailures())->toBeFalse();
 
@@ -257,6 +259,7 @@ it('tracks indeterminate progress without a total', function () {
 
     expect($run->refresh())
         ->total_items->toBeNull()
+        ->totalItems()->toBeNull()
         ->processedItems()->toBe(5)
         ->pendingItems()->toBeNull()
         ->percentage()->toBeNull();
@@ -272,6 +275,7 @@ it('distinguishes an unknown total from a known empty progress', function () {
 
     expect($run)
         ->total_items->toBe(0)
+        ->totalItems()->toBe(0)
         ->pendingItems()->toBe(0)
         ->percentage()->toBe(0)
         ->and($failedRun->percentage())->toBe(0)
@@ -722,7 +726,7 @@ it('can record missed items without incrementing counters', function () {
 
     expect($item->status)->toBe(RunItemStatus::Failed)
         ->and($run->refresh()->processed_items)->toBe(0)
-        ->and($run->failed_items)->toBe(0);
+        ->and($run->failedItems())->toBe(0);
 });
 
 it('requires recorded models to be persisted', function () {
@@ -898,6 +902,7 @@ it('distinguishes a terminal run status from individual item failures', function
     $run->{$method}();
 
     expect($run->isFinished())->toBeTrue()
+        ->and($run->isCompleted())->toBe($method === 'complete')
         ->and($run->isFailed())->toBe($method === 'fail')
         ->and($run->isCancelled())->toBe($method === 'cancel')
         ->and($run->hasFailures())->toBeTrue();
@@ -922,10 +927,12 @@ it('reports batch-like item metrics', function () {
     $run->advance(4);
 
     expect($run)
+        ->totalItems()->toBe(10)
         ->processedItems()->toBe(4)
         ->pendingItems()->toBe(6)
         ->percentage()->toBe(40)
         ->and($run->isFinished())->toBeFalse()
+        ->and($run->isCompleted())->toBeFalse()
         ->and($run->isCancelled())->toBeFalse()
         ->and($run->isFailed())->toBeFalse()
         ->and($run->hasFailures())->toBeFalse();

@@ -217,6 +217,14 @@ class Run extends Model
     }
 
     /**
+     * Determine if the run has completed.
+     */
+    public function isCompleted(): bool
+    {
+        return $this->status === RunStatus::Completed;
+    }
+
+    /**
      * Determine if the run has been cancelled.
      */
     public function isCancelled(): bool
@@ -241,11 +249,27 @@ class Run extends Model
     }
 
     /**
+     * Get the total number of items to process, if known.
+     */
+    public function totalItems(): ?int
+    {
+        return $this->total_items;
+    }
+
+    /**
      * Get the total number of items that have been processed.
      */
     public function processedItems(): int
     {
         return $this->processed_items;
+    }
+
+    /**
+     * Get the number of processed items counted as failures.
+     */
+    public function failedItems(): int
+    {
+        return $this->failed_items;
     }
 
     /**
