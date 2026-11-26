@@ -161,7 +161,8 @@ Keep these behaviors in mind:
 
 - `incrementFailed()` increments both the processed and failed counters.
 - Ledger-only entries do not affect progress or aggregate helpers such as `hasFailures()`.
-- `advance()` creates no `RunItem`. `record()` without a model is also count-only, as is `missed()` without any details.
+- `advance()` creates no `RunItem`. Both `record()` and `missed()` are count-only when called without details.
+- Passing a model or non-empty metadata to `record()` creates a successful `RunItem`, even with `count: false`.
 - Passing an exception, model, or metadata to `missed()` creates a failed `RunItem`.
 - Count-only failures cannot retain a per-item exception or metadata because no ledger entry is created.
 - Counters and `$run->items()->count()` may differ intentionally.
@@ -226,6 +227,8 @@ Run statuses are derived from their lifecycle timestamps, keeping those timestam
 
 Terminal transitions are idempotent and the first terminal state wins. Repeating the same transition returns `true` without changing its timestamp, while attempting a different terminal transition returns `false`. Use `restart()` to explicitly start the run again.
 
+If an Eloquent observer vetoes a lifecycle save by returning `false`, Progress throws a `RuntimeException`. A vetoed update leaves the run in its previous persisted state.
+
 Restarting keeps the same run ID, name, type, total, subject, owner, and metadata:
 
 ```php
@@ -251,9 +254,11 @@ Read the percentage, counts, and lifecycle state:
 ```php
 $run->percentage();
 
-$run->finished();
+$run->isFinished();
 
-$run->cancelled();
+$run->isCancelled();
+
+$run->isFailed();
 
 $run->hasFailures();
 
@@ -261,6 +266,8 @@ $run->pendingItems();
 
 $run->processedItems();
 ```
+
+`isFailed()` describes the run itself. `hasFailures()` checks its failed-item counter, so a completed run can still have failures.
 
 ### Cursor-backed runs
 
@@ -296,6 +303,12 @@ Attach metadata when the ledger entry needs additional context:
 
 ```php
 $run->record($contact, metadata: ['source' => 'import']);
+```
+
+Record a successful row without an Eloquent model:
+
+```php
+$run->record(metadata: ['row' => 42]);
 ```
 
 Use `missed()` with an item when a persisted model failed:
@@ -578,7 +591,7 @@ public function middleware(): array
 }
 ```
 
-The middleware reloads the run from the database before checking `finished()`. It skips failed, completed, and cancelled runs without resetting their state or progress.
+The middleware reloads the run from the database before checking `isFinished()`. It skips failed, completed, and cancelled runs without resetting their state or progress.
 
 ## Querying
 
@@ -591,7 +604,7 @@ Run::completed()->latest()->get();
 
 Run::failed()->latest()->get();
 
-Run::query()->cancelled()->latest()->get();
+Run::cancelled()->latest()->get();
 ```
 
 Run items can also be scoped:

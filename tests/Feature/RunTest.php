@@ -98,6 +98,13 @@ it('records and clears ledger items for a custom run model', function () {
         ->and($other->items()->count())->toBe(1);
 });
 
+it('does not return an unsaved run when an observer vetoes creation', function () {
+    Run::creating(fn () => false);
+
+    expect(fn () => Run::start())->toThrow(RuntimeException::class)
+        ->and(Run::count())->toBe(0);
+});
+
 it('starts progress', function () {
     $run = Run::start(
         name: 'Import contacts',
@@ -583,6 +590,19 @@ it('records metadata without exposing progress item attributes', function () {
         ->failed_at->toBeNull();
 });
 
+it('records successful metadata without a resource', function (bool $count) {
+    $run = Run::start();
+    $item = $run->record(metadata: ['row' => 42], count: $count);
+
+    expect($run->items()->sole()->is($item))->toBeTrue()
+        ->and($item->refresh())
+        ->metadata->toBe(['row' => 42])
+        ->status->toBe(RunStatus::Completed)
+        ->resource_type->toBeNull()
+        ->resource_id->toBeNull()
+        ->and($run->refresh()->processedItems())->toBe($count ? 1 : 0);
+})->with([true, false]);
+
 it('can record processed items without ledger entries', function () {
     $run = Run::start(total: 1);
 
@@ -664,7 +684,7 @@ it('queries progress by status', function () {
     expect(DB::table('runs')->count())->toBe(4)
         ->and(Run::completed()->count())->toBe(1)
         ->and(Run::failed()->count())->toBe(1)
-        ->and(Run::query()->cancelled()->count())->toBe(1)
+        ->and(Run::cancelled()->count())->toBe(1)
         ->and(Run::active()->count())->toBe(1);
 });
 
@@ -713,6 +733,30 @@ it('does not replace an existing terminal state', function () {
         ->and($run->exception)->toContain('Unable to finish');
 });
 
+it('restores the run when an observer vetoes a terminal transition', function (string $method) {
+    $run = Run::start();
+    $before = $run->fresh()->getAttributes();
+
+    Run::updating(fn () => false);
+
+    expect(fn () => $method === 'fail' ? $run->fail(new RuntimeException('Job failed')) : $run->{$method}())
+        ->toThrow(RuntimeException::class, 'The run could not be updated.');
+
+    expect($run->getAttributes())->toBe($before)
+        ->and($run->fresh()->getAttributes())->toBe($before);
+})->with(['complete', 'fail', 'cancel']);
+
+it('distinguishes a terminal run status from individual item failures', function (string $method) {
+    $run = Run::start();
+    $run->missed();
+    $run->{$method}();
+
+    expect($run->isFinished())->toBeTrue()
+        ->and($run->isFailed())->toBe($method === 'fail')
+        ->and($run->isCancelled())->toBe($method === 'cancel')
+        ->and($run->hasFailures())->toBeTrue();
+})->with(['complete', 'fail', 'cancel']);
+
 it('synchronizes stale models with the winning terminal state', function () {
     $run = Run::start();
     $staleRun = $run->fresh();
@@ -735,8 +779,9 @@ it('reports batch-like item metrics', function () {
         ->processedItems()->toBe(4)
         ->pendingItems()->toBe(6)
         ->percentage()->toBe(40)
-        ->and($run->finished())->toBeFalse()
-        ->and($run->cancelled())->toBeFalse()
+        ->and($run->isFinished())->toBeFalse()
+        ->and($run->isCancelled())->toBeFalse()
+        ->and($run->isFailed())->toBeFalse()
         ->and($run->hasFailures())->toBeFalse();
 });
 

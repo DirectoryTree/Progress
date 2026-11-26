@@ -82,7 +82,11 @@ class Run extends Model
             'total_items' => $total,
             'metadata' => $metadata ?: null,
             'started_at' => $run->freshTimestamp(),
-        ])->save();
+        ]);
+
+        if (! $run->save()) {
+            throw new RuntimeException('The run could not be started.');
+        }
 
         return $run;
     }
@@ -97,7 +101,7 @@ class Run extends Model
 
             $this->setRawAttributes($run->getAttributes(), true);
 
-            if ($this->finished()) {
+            if ($this->isFinished()) {
                 return false;
             }
 
@@ -202,19 +206,25 @@ class Run extends Model
     /**
      * Determine if the run has finished.
      */
-    public function finished(): bool
+    public function isFinished(): bool
     {
-        return ! is_null($this->failed_at)
-            || ! is_null($this->cancelled_at)
-            || ! is_null($this->completed_at);
+        return ! $this->isActive();
     }
 
     /**
      * Determine if the run has been cancelled.
      */
-    public function cancelled(): bool
+    public function isCancelled(): bool
     {
-        return ! is_null($this->cancelled_at);
+        return $this->status === RunStatus::Cancelled;
+    }
+
+    /**
+     * Determine if the run itself has failed.
+     */
+    public function isFailed(): bool
+    {
+        return $this->status === RunStatus::Failed;
     }
 
     /**
@@ -321,14 +331,22 @@ class Run extends Model
                 return true;
             }
 
-            if ($this->finished()) {
+            if ($this->isFinished()) {
                 return false;
             }
 
-            return $this->forceFill([
+            $this->forceFill([
                 ...$attributes,
                 $column => $this->freshTimestamp(),
-            ])->save();
+            ]);
+
+            if (! $this->save()) {
+                $this->setRawAttributes($run->getAttributes(), true);
+
+                throw new RuntimeException('The run could not be updated.');
+            }
+
+            return true;
         });
     }
 
@@ -349,7 +367,7 @@ class Run extends Model
      */
     public function record(?Model $item = null, array $metadata = [], bool $count = true): ?RunItem
     {
-        if (! $item) {
+        if (! $item && ! $metadata) {
             if ($count) {
                 $this->advance();
             }
@@ -357,7 +375,7 @@ class Run extends Model
             return null;
         }
 
-        if (! $item->exists) {
+        if ($item && ! $item->exists) {
             throw new InvalidArgumentException('Run items must be persisted Eloquent models. Use missed() to record failures without a model.');
         }
 
@@ -368,8 +386,8 @@ class Run extends Model
 
             /** @var RunItem $record */
             $record = $this->items()->create([
-                'resource_type' => $item->getMorphClass(),
-                'resource_id' => $item->getKey(),
+                'resource_type' => $item?->getMorphClass(),
+                'resource_id' => $item?->getKey(),
                 'metadata' => $metadata ?: null,
                 'completed_at' => $this->freshTimestamp(),
             ]);

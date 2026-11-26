@@ -21,6 +21,6 @@ class SkipIfRunFinished
     {
         $this->run->refresh();
 
-        return $this->run->finished() ? null : $next($job);
+        return $this->run->isFinished() ? null : $next($job);
     }
 }
