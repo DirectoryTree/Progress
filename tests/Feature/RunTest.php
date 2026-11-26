@@ -46,6 +46,17 @@ it('does not change other run counters when advancing an unsaved run', function 
         ->and($second->fresh()->processedItems())->toBe(0);
 })->with(['advance', 'record']);
 
+it('does not count failures on an unsaved run with an existing run ID', function (string $method) {
+    $run = Run::start();
+    $unsaved = new Run(['id' => $run->getKey()]);
+
+    expect(fn () => $unsaved->{$method}())->toThrow(InvalidArgumentException::class);
+
+    expect($run->refresh())
+        ->processed_items->toBe(0)
+        ->failed_items->toBe(0);
+})->with(['incrementFailed', 'missed']);
+
 it('stores runs and their ledger using the run tables and foreign key', function () {
     $run = Run::start();
     $article = Article::create();

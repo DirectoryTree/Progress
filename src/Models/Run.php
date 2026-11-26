@@ -310,28 +310,6 @@ class Run extends Model
     }
 
     /**
-     * Increment the failed item count.
-     */
-    public function incrementFailed(int $amount = 1): int
-    {
-        $updated = $this->newQuery()
-            ->whereKey($this)
-            ->toBase()
-            ->incrementEach([
-                'processed_items' => $amount,
-                'failed_items' => $amount,
-            ], [
-                $this->getUpdatedAtColumn() => $this->freshTimestampString(),
-            ]);
-
-        if ($updated) {
-            $this->refresh();
-        }
-
-        return $updated;
-    }
-
-    /**
      * Record a processed item for the run.
      */
     public function record(?Model $item = null, array $metadata = [], bool $count = true): ?RunItem
@@ -349,12 +327,16 @@ class Run extends Model
         }
 
         return $this->getConnection()->transaction(function () use ($item, $metadata, $count) {
+            if ($count) {
+                $this->lockForCounterUpdate();
+            }
+
             /** @var RunItem $record */
             $record = $this->items()->create([
-                'metadata' => $metadata ?: null,
-                'completed_at' => $this->freshTimestamp(),
                 'resource_type' => $item->getMorphClass(),
                 'resource_id' => $item->getKey(),
+                'metadata' => $metadata ?: null,
+                'completed_at' => $this->freshTimestamp(),
             ]);
 
             if ($count) {
@@ -387,6 +369,10 @@ class Run extends Model
         }
 
         return $this->getConnection()->transaction(function () use ($exception, $item, $metadata, $count) {
+            if ($count) {
+                $this->lockForCounterUpdate();
+            }
+
             /** @var RunItem $record */
             $record = $this->items()->create([
                 'resource_type' => $item?->getMorphClass(),
@@ -402,5 +388,43 @@ class Run extends Model
 
             return $record;
         });
+    }
+
+    /**
+     * Increment the failed item count.
+     */
+    public function incrementFailed(int $amount = 1): int
+    {
+        if (! $this->exists) {
+            throw new InvalidArgumentException('The run must be saved before incrementing its failure count.');
+        }
+
+        $updated = $this->newQuery()
+            ->whereKey($this)
+            ->toBase()
+            ->incrementEach([
+                'processed_items' => $amount,
+                'failed_items' => $amount,
+            ], [
+                $this->getUpdatedAtColumn() => $this->freshTimestampString(),
+            ]);
+
+        if ($updated) {
+            $this->refresh();
+        }
+
+        return $updated;
+    }
+
+    /**
+     * Lock the run before a ledger insert takes a shared foreign key lock.
+     */
+    protected function lockForCounterUpdate(): void
+    {
+        $this->newModelQuery()
+            ->whereKey($this->getKey())
+            ->lockForUpdate()
+            ->toBase()
+            ->first([$this->getKeyName()]);
     }
 }
