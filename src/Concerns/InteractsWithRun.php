@@ -9,7 +9,7 @@ trait InteractsWithRun
     /**
      * The run owned by the job.
      */
-    public ?Run $run = null;
+    public Run $run;
 
     /**
      * Create the run owned by the job.
@@ -26,7 +26,7 @@ trait InteractsWithRun
      */
     public function getRun(): ?Run
     {
-        return $this->run;
+        return $this->run ?? null;
     }
 
     /**
