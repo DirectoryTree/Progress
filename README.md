@@ -52,10 +52,10 @@ Implement `TracksRun` and use `InteractsWithRun` alongside Laravel's `Queueable`
 
 ```php
 use App\Models\Contact;
-use DirectoryTree\Progress\Concerns\InteractsWithRun;
-use DirectoryTree\Progress\Contracts\TracksRun;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use DirectoryTree\Progress\Contracts\TracksRun;
+use DirectoryTree\Progress\Concerns\InteractsWithRun;
 
 class SyncContacts implements ShouldQueue, TracksRun
 {
@@ -97,14 +97,16 @@ Advance the processed count as work is completed:
 foreach ($rows as $index => $row) {
     try {
         Contact::create($row);
-
-        $run->advance();
     } catch (Throwable $exception) {
         $run->missed(
             $exception,
             metadata: ['row' => $index + 1],
         );
+
+        continue;
     }
+
+    $run->advance();
 }
 
 $run->complete();
@@ -148,12 +150,16 @@ foreach ($contact->tags as $tag) {
 Tracking modes can be mixed. This example counts every attempted row while retaining ledger entries only for failures:
 
 ```php
-try {
-    $importer->process($row);
+foreach ($rows as $row) {
+    try {
+        $importer->process($row);
+    } catch (Throwable $exception) {
+        $run->missed($exception, metadata: ['row' => $row]);
+
+        continue;
+    }
 
     $run->advance();
-} catch (Throwable $exception) {
-    $run->missed($exception, metadata: ['row' => $row]);
 }
 ```
 
@@ -283,11 +289,13 @@ $run = Run::start(name: 'Sync contacts');
 foreach (Contact::query()->cursor() as $contact) {
     try {
         $contact->syncToCrm();
-
-        $run->advance();
     } catch (Throwable $exception) {
         $run->missed($exception, item: $contact);
+
+        continue;
     }
+
+    $run->advance();
 }
 
 $run->complete();
@@ -376,10 +384,10 @@ Implement `TracksRun` and use `InteractsWithRun` alongside Laravel's `Queueable`
 
 ```php
 use App\Models\Contact;
-use DirectoryTree\Progress\Concerns\InteractsWithRun;
-use DirectoryTree\Progress\Contracts\TracksRun;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use DirectoryTree\Progress\Contracts\TracksRun;
+use DirectoryTree\Progress\Concerns\InteractsWithRun;
 
 class SyncContacts implements ShouldQueue, TracksRun
 {
@@ -483,13 +491,15 @@ class ImportContact implements ShouldQueue
 
         try {
             $contact = Contact::create($this->row);
-
-            $this->run->record($contact);
         } catch (Throwable $exception) {
             $this->run->missed($exception, metadata: [
-                'row' => $this->row
+                'row' => $this->row,
             ]);
+
+            return;
         }
+
+        $this->run->record($contact);
     }
 }
 ```
@@ -504,6 +514,132 @@ ImportContact::dispatch($run, $row);
 
 Laravel serializes the run as an Eloquent model identifier and restores it when the job is processed.
 
+### Sharing a run across a batch
+
+When several jobs contribute to one run, let a [Laravel job batch](https://laravel.com/docs/queues#job-batching) own completion and failure. Pass the same `Run` to each job; don't implement `TracksRun` on them, since finishing one job doesn't mean the whole import is finished.
+
+For example, an inbox import may discover messages one page at a time. In an authenticated request, create a pending run without a total. Use the saved `App\Models\Mailbox` as the subject and the user requesting the import as the owner:
+
+```php
+use App\Jobs\ImportInbox;
+use Illuminate\Bus\Batch;
+use Illuminate\Support\Facades\Bus;
+use DirectoryTree\Progress\Models\Run;
+
+$run = new Run(['name' => 'Import inbox']);
+
+$run->subject()->associate($mailbox);
+$run->owner()->associate(auth()->user());
+
+$run->save();
+
+$runId = $run->getKey();
+
+Bus::batch([new ImportInbox($mailbox, $run)])
+    ->then(static function (Batch $batch) use ($runId): void {
+        if (! $batch->cancelled()) {
+            Run::findOrFail($runId)->complete();
+        }
+    })
+    ->catch(static function (Batch $batch, Throwable $exception) use ($runId): void {
+        Run::findOrFail($runId)->fail($exception);
+    })
+    ->dispatch();
+```
+
+The page job adds the message jobs **and the next page** to the current batch before returning. A standalone `dispatch()` would put that work outside the batch, allowing the run to complete too early. Here, `imap()` is an application method on the mailbox model that returns its ImapEngine client:
+
+```php
+namespace App\Jobs;
+
+use App\Models\Mailbox;
+use Illuminate\Bus\Batchable;
+use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use DirectoryTree\Progress\Models\Run;
+use DirectoryTree\ImapEngine\Pagination\Cursor;
+
+class ImportInbox implements ShouldQueue, ShouldBeEncrypted
+{
+    use Batchable, Queueable;
+
+    public function __construct(
+        public Mailbox $mailbox,
+        public Run $run,
+        public ?Cursor $cursor = null,
+    ) {}
+
+    public function handle(): void
+    {
+        $batch = $this->batch();
+
+        if ($batch->cancelled() || ! $this->run->begin()) {
+            return;
+        }
+
+        $page = $this->mailbox->imap()
+            ->inbox()
+            ->messages()
+            ->cursorPaginate(perPage: 100, cursor: $this->cursor);
+
+        $jobs = [];
+
+        foreach ($page->items() as $message) {
+            $jobs[] = new ImportMessage($this->mailbox, $message->uid(), $this->run);
+        }
+
+        if ($cursor = $page->nextCursor()) {
+            $jobs[] = new self($this->mailbox, $this->run, $cursor);
+        }
+
+        if ($jobs) {
+            $batch->add($jobs);
+        }
+    }
+}
+```
+
+Only the message job advances the run, after the application's importer succeeds:
+
+```php
+namespace App\Jobs;
+
+use App\Models\Mailbox;
+use App\Services\MessageImporter;
+use DirectoryTree\Progress\Models\Run;
+use Illuminate\Bus\Batchable;
+use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+
+class ImportMessage implements ShouldQueue, ShouldBeEncrypted
+{
+    use Batchable, Queueable;
+
+    public function __construct(
+        public Mailbox $mailbox,
+        public int $uid,
+        public Run $run,
+    ) {}
+
+    public function handle(MessageImporter $importer): void
+    {
+        if ($this->batch()->cancelled()) {
+            return;
+        }
+
+        $importer->import($this->mailbox->imap(), $this->uid);
+
+        $this->run->advance();
+    }
+}
+```
+
+The run counts messages, not page jobs. An empty inbox completes with zero processed items. Let exceptions propagate for Laravel to retry: `catch()` fails the run on the first terminal job failure, while `then()` completes it only after all pages and messages succeed. If you explicitly cancel the batch, cancel the run as well.
+
+Retries can replay a page or a message. When counts must be exact, persist a checkpoint per run and message, and advance only when recording that checkpoint for the first time, in the same database transaction.
+
 ### Retrying jobs
 
 Add `RestartFailedRun` to a job that owns the run lifecycle. It restarts a failed run before `handle()` executes. It checks the model's persisted state, so it works for jobs retried through `queue:retry` or Horizon, as well as newly dispatched jobs that receive a failed run.
@@ -511,13 +647,13 @@ Add `RestartFailedRun` to a job that owns the run lifecycle. It restarts a faile
 Pair it with `SkipIfRunFinished` when completed or cancelled runs should prevent execution:
 
 ```php
+use Throwable;
 use App\Models\Contact;
+use DirectoryTree\Progress\Models\Run;
+use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use DirectoryTree\Progress\Middleware\RestartFailedRun;
 use DirectoryTree\Progress\Middleware\SkipIfRunFinished;
-use DirectoryTree\Progress\Models\Run;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Queue\Queueable;
-use Throwable;
 
 class SyncContacts implements ShouldQueue
 {
