@@ -16,7 +16,7 @@
     <span> · </span>
     <a href="#metrics">Metrics</a>
     <span> · </span>
-    <a href="#testing">Testing</a>
+    <a href="#jobs">Jobs</a>
 </p>
 
 ---
@@ -112,72 +112,7 @@ foreach ($rows as $index => $row) {
 $run->complete();
 ```
 
-## Counters and Ledger
-
-Counters and per-item history are independent:
-
-- Counters measure units of work and drive `percentage()`, `pendingItems()`, and `hasFailures()`.
-- Ledger entries describe what happened to a specific resource, including its metadata or exception.
-
-The `total_items` value on a `Run` represents units of work, not the number of ledger entries you expect to create. A failed item has still been processed, so failures increment both `processed_items` and `failed_items` by default.
-
-Start with count-only tracking. Add ledger entries when you need to inspect individual resources or failures.
-
-| Mode             | Successful item                           | Failed item                                               |
-| ---------------- | ----------------------------------------- | --------------------------------------------------------- |
-| Count only       | `$run->advance()`                     | `$run->missed()`                                      |
-| Count and ledger | `$run->record($contact)`              | `$run->missed($exception, item: $contact)`              |
-| Ledger only      | `$run->record($contact, count: false)` | `$run->missed($exception, item: $contact, count: false)` |
-
-Use `advance()` to count a batch without writing ledger entries. The first argument is the total processed, **including** failures. The optional `failed` count must be between zero and that total:
-
-```php
-$run->advance(10, failed: 2); // 10 processed: 8 succeeded and 2 failed.
-```
-
-`advance(0)` returns `0` without writing. Non-empty batches increment both counters in one database update without firing `Run` model events or saving unrelated edits. The run instance reflects its own increments; use `$run->fresh()` to read totals that include other workers' progress.
-
-Use ledger-only tracking when a resource should appear in the history but does not represent another unit of progress. For example, one imported row may count once while creating several related models:
-
-```php
-$run->record($contact);
-
-foreach ($contact->tags as $tag) {
-    $run->record($tag, count: false);
-}
-```
-
-Tracking modes can be mixed. This example counts every attempted row while retaining ledger entries only for failures:
-
-```php
-foreach ($rows as $row) {
-    try {
-        $importer->process($row);
-    } catch (Throwable $exception) {
-        $run->missed($exception, metadata: ['row' => $row]);
-
-        continue;
-    }
-
-    $run->advance();
-}
-```
-
-Keep these behaviors in mind:
-
-- `missed()` without details is shorthand for `advance(failed: 1)`: one processed, one failed, no ledger entry.
-- Ledger-only entries do not affect progress or aggregate helpers such as `hasFailures()`.
-- `advance()` creates no `RunItem`. Both `record()` and `missed()` are count-only when called without details.
-- Passing a model or non-empty metadata to `record()` creates a successful `RunItem`, even with `count: false`.
-- Passing an exception, model, or metadata to `missed()` creates a failed `RunItem`.
-- Count-only failures cannot retain a per-item exception or metadata because no ledger entry is created.
-- Counters and `$run->items()->count()` may differ intentionally.
-- Ledger entries require a saved run. For counted entries, Progress updates the run counters before inserting the item in the same transaction. Both writes succeed or neither is kept. The item fires its usual Eloquent events.
-- Totals and counter increments may be zero but cannot be negative. Omit the total when it is unknown.
-- Calls are not idempotent. Repeating a counting call increments the counters again, while repeating a ledger-producing call creates another `RunItem`. Queue retries require application-level idempotency.
-- Progress does not reject counters that exceed `total_items`. In that case, `percentage()` remains capped at `100` and `pendingItems()` remains at `0`.
-
-## Starting a Run
+### Customizing a run
 
 Pass the model being tracked, the owner, type, and metadata when the run needs more context:
 
@@ -205,6 +140,56 @@ $run = Run::start(
     type: RunType::Import,
 );
 ```
+
+## Counters and Ledger
+
+Counters measure units of work. Ledger entries describe individual outcomes. Start with counters alone and add entries when you need to inspect a resource, its metadata, or an exception.
+
+| Mode             | Successful item                        | Failed item                                              |
+| ---------------- | -------------------------------------- | -------------------------------------------------------- |
+| Count only       | `$run->advance()`                      | `$run->missed()`                                         |
+| Count and ledger | `$run->record($contact)`               | `$run->missed($exception, item: $contact)`                |
+| Ledger only      | `$run->record($contact, count: false)` | `$run->missed($exception, item: $contact, count: false)` |
+
+A failure is still a processed item. With no details, `missed()` is shorthand for `advance(failed: 1)`: it increments both counters without creating a ledger entry. `record()` without details is likewise count-only.
+
+### Counting a batch
+
+The amount passed to `advance()` is the total processed, **including** failures. The optional `failed` count must be between zero and that amount:
+
+```php
+$run->advance(10, failed: 2); // 10 processed: 8 succeeded and 2 failed.
+```
+
+`advance(0)` returns `0` without writing. Non-empty batches update the counters atomically without firing `Run` model events or saving unrelated edits. The run instance reflects its own increments; use `$run->fresh()` to read totals that include other workers' progress.
+
+### Ledger items
+
+Pass a persisted model to track the resource, or pass metadata alone when there is no model to attach:
+
+```php
+$run->record($contact, metadata: ['source' => 'import']);
+
+$run->record(metadata: ['row' => 42]);
+
+$run->missed($exception, metadata: ['row' => 42]);
+```
+
+Each entry stores its outcome in `status` and its recording time in `created_at`. Eloquent casts `$item->status` to `DirectoryTree\Progress\Enums\RunItemStatus` (`Completed` or `Failed`). Unlike a run, a ledger entry has no lifecycle timestamps or `updated_at`.
+
+Use `count: false` when a resource belongs in the history but does not represent another unit of work. For example, one imported row may create a contact and several tags:
+
+```php
+$run->record($contact);
+
+foreach ($contact->tags as $tag) {
+    $run->record($tag, count: false);
+}
+```
+
+- **Totals count work, not entries.** Ledger-only entries do not affect `percentage()`, `pendingItems()`, or `hasFailures()`. Totals and increments may be zero but not negative. Omit the total if it is unknown. If the processed count exceeds the total, the percentage is capped at 100 and pending items at zero.
+- **Counted entries are atomic.** On a saved run, Progress updates the counters and then inserts the entry in the same transaction. If either write fails, neither is kept. The ledger item fires its normal Eloquent events.
+- **Retries can double-count.** Repeating a counting call increments the counters again; repeating a ledger-producing call creates another entry. Make retried work idempotent when counts must be exact.
 
 ## Lifecycle
 
@@ -303,43 +288,6 @@ $run->complete();
 
 When the total is unknown, `total_items`, `pendingItems()`, and `percentage()` return `null` while the run is active. The processed and failed counters continue to update, allowing an interface to display the number processed with an indeterminate progress indicator. Once the run is completed, `percentage()` returns `100`.
 
-## Ledger Items
-
-Each ledger entry stores its outcome as a string and the time it was recorded in `created_at`. Eloquent casts `$item->status` to `DirectoryTree\Progress\Enums\RunItemStatus`, either `RunItemStatus::Completed` or `RunItemStatus::Failed`. The parent run's lifecycle uses `RunStatus`; ledger items have no separate lifecycle timestamps or `updated_at`.
-
-Use `record()` when a processed item maps to a persisted Eloquent model:
-
-```php
-$run->record($contact);
-```
-
-Attach metadata when the ledger entry needs additional context:
-
-```php
-$run->record($contact, metadata: ['source' => 'import']);
-```
-
-Record a successful row without an Eloquent model:
-
-```php
-$run->record(metadata: ['row' => 42]);
-```
-
-Use `missed()` with an item when a persisted model failed:
-
-```php
-$run->missed($exception, item: $contact);
-```
-
-Use `missed()` when there is no model to attach:
-
-```php
-$run->missed(
-    $exception,
-    metadata: ['row' => 42],
-);
-```
-
 ## Relationships
 
 Add `HasRuns` to models that should expose their runs:
@@ -374,39 +322,35 @@ public function operations(): MorphMany
 }
 ```
 
+## Querying
+
+Progress includes a few common query methods:
+
+```php
+Run::active()->get();
+
+Run::completed()->latest()->get();
+
+Run::failed()->latest()->get();
+
+Run::cancelled()->latest()->get();
+```
+
+Run items can also be scoped:
+
+```php
+$run->items()->completed()->get();
+
+$run->items()->failed()->get();
+```
+
 ## Jobs
 
 Progress can manage a job's progress automatically, or you can manage it yourself by passing the run into the job.
 
 ### Automatically managed runs
 
-Implement `TracksRun` and use `InteractsWithRun` alongside Laravel's `Queueable` trait:
-
-```php
-use App\Models\Contact;
-use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use DirectoryTree\Progress\Contracts\TracksRun;
-use DirectoryTree\Progress\Concerns\InteractsWithRun;
-
-class SyncContacts implements ShouldQueue, TracksRun
-{
-    use InteractsWithRun, Queueable;
-
-    public function handle(): void
-    {
-        foreach (Contact::query()->cursor() as $contact) {
-            $contact->syncToCrm();
-
-            $this->run->advance();
-        }
-    }
-}
-
-SyncContacts::dispatch();
-```
-
-The package creates a pending run before Laravel serializes the job, using the job's class basename as its name. The model is available as `$this->run` during `middleware()`, `handle()`, and `failed()`.
+When you dispatch a `TracksRun` job like the one in [Usage](#usage), Progress creates a pending run before Laravel serializes the job. Its default name is the job's class basename. The model is available as `$this->run` during `middleware()`, `handle()`, and `failed()`.
 
 Laravel's `ShouldBeUnique` behavior is unchanged: a dispatch rejected by its unique lock does not create a run.
 
@@ -606,13 +550,13 @@ Only the message job advances the run, after the application's importer succeeds
 namespace App\Jobs;
 
 use App\Models\Mailbox;
-use App\Services\MessageImporter;
-use DirectoryTree\Progress\Middleware\SkipIfRunFinished;
-use DirectoryTree\Progress\Models\Run;
 use Illuminate\Bus\Batchable;
+use App\Services\MessageImporter;
+use DirectoryTree\Progress\Models\Run;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
+use DirectoryTree\Progress\Middleware\SkipIfRunFinished;
 
 class ImportMessage implements ShouldQueue, ShouldBeEncrypted
 {
@@ -741,33 +685,78 @@ public function middleware(): array
 
 The middleware reloads the run from the database before checking `isFinished()`. It skips failed, completed, and cancelled runs without resetting their state or progress.
 
-## Querying
+### Testing jobs that use Progress
 
-Progress includes a few common query methods:
+#### Dispatching a job
 
-```php
-Run::active()->get();
-
-Run::completed()->latest()->get();
-
-Run::failed()->latest()->get();
-
-Run::cancelled()->latest()->get();
-```
-
-Run items can also be scoped:
+Use `Queue::fake()` when testing that an endpoint dispatches the job. The job won't run or automatically create a `Run`.
 
 ```php
-$run->items()->completed()->get();
+use App\Jobs\SyncContacts;
+use Illuminate\Support\Facades\Queue;
 
-$run->items()->failed()->get();
+use function Pest\Laravel\post;
+
+it('queues a contact sync', function () {
+    Queue::fake();
+
+    post('/contacts/sync');
+
+    Queue::assertPushed(SyncContacts::class);
+});
 ```
 
-## Testing
+For a batch, use `Bus::fake()` and `Bus::assertBatched()` to check what was dispatched, not whether its completion callback ran.
 
-Install the dependencies and run the test suite:
+#### Testing the automatic lifecycle
 
-```bash
-composer install
-composer test
+Use `dispatchSync()` to exercise the same job's queue middleware and completion event. Leave the queue and bus real; fake the CRM request instead. This example assumes an isolated test database with the Progress migrations applied and a `syncToCrm()` method that uses Laravel's HTTP client.
+
+```php
+use App\Models\Contact;
+use App\Jobs\SyncContacts;
+use Illuminate\Support\Facades\Http;
+use DirectoryTree\Progress\Models\Run;
+use DirectoryTree\Progress\Enums\RunStatus;
+
+it('completes the run after syncing a contact', function () {
+    Http::fake();
+    Contact::factory()->create();
+
+    SyncContacts::dispatchSync();
+
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Completed)
+        ->processed_items->toBe(1)
+        ->started_at->not->toBeNull();
+});
+```
+
+#### Testing a batch child
+
+Give `ImportMessage` a real run, a fake batch, and a mock importer. Calling `handle()` directly tests the child's work without running its middleware or the batch callbacks.
+
+```php
+use App\Models\Mailbox;
+use App\Jobs\ImportMessage;
+use App\Services\MessageImporter;
+use DirectoryTree\Progress\Models\Run;
+use DirectoryTree\Progress\Enums\RunStatus;
+
+it('counts an imported message without completing the shared run', function () {
+    $run = Run::start();
+
+    $mailbox = Mailbox::factory()->create();
+
+    $importer = Mockery::mock(MessageImporter::class);
+    $importer->shouldReceive('import')->once();
+
+    [$job] = (new ImportMessage($mailbox, uid: 42, run: $run))->withFakeBatch();
+
+    $job->handle($importer);
+
+    expect($run->fresh())
+        ->processed_items->toBe(1)
+        ->status->toBe(RunStatus::Running);
+});
 ```
