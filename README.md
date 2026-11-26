@@ -247,19 +247,19 @@ Both methods reload the run under a row lock. `restartIfFailed()` checks that st
 Read the percentage, counts, and lifecycle state:
 
 ```php
-$run->percentage();
+$run->percentage(); // ?int
 
-$run->isFinished();
+$run->isFinished(); // bool
 
-$run->isCancelled();
+$run->isCancelled(); // bool
 
-$run->isFailed();
+$run->isFailed(); // bool
 
-$run->hasFailures();
+$run->hasFailures(); // bool
 
-$run->pendingItems();
+$run->pendingItems(); // ?int
 
-$run->processedItems();
+$run->processedItems(); // int
 ```
 
 `isFailed()` describes the run itself. `hasFailures()` checks its failed-item counter, so a completed run can still have failures.
