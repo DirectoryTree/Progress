@@ -3,24 +3,24 @@
 namespace DirectoryTree\Progress\Middleware;
 
 use Closure;
-use DirectoryTree\Progress\Models\Progress;
+use DirectoryTree\Progress\Models\Run;
 
-class SkipIfProgressFinished
+class SkipIfRunFinished
 {
     /**
      * Create a new middleware instance.
      */
     public function __construct(
-        public Progress $progress
+        public Run $run
     ) {}
 
     /**
-     * Skip the job if the progress has finished.
+     * Skip the job if the run has finished.
      */
     public function handle(object $job, Closure $next): mixed
     {
-        $this->progress->refresh();
+        $this->run->refresh();
 
-        return $this->progress->finished() ? null : $next($job);
+        return $this->run->finished() ? null : $next($job);
     }
 }

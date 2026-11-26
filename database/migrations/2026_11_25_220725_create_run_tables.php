@@ -11,7 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('progress', function (Blueprint $table) {
+        Schema::create('runs', function (Blueprint $table) {
             $table->id();
             $table->string('name')->nullable();
             $table->string('type')->nullable();
@@ -28,16 +28,16 @@ return new class extends Migration
             $table->timestamp('cancelled_at')->nullable();
             $table->timestamps();
 
-            $table->index(['completed_at', 'failed_at', 'cancelled_at', 'started_at'], 'progress_active_index');
+            $table->index(['completed_at', 'failed_at', 'cancelled_at', 'started_at'], 'runs_active_index');
             $table->index(['failed_at', 'created_at']);
             $table->index(['cancelled_at', 'created_at']);
             $table->index(['type', 'created_at']);
             $table->index('created_at');
         });
 
-        Schema::create('progress_items', function (Blueprint $table) {
+        Schema::create('run_items', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('progress_id')->constrained('progress')->cascadeOnDelete();
+            $table->foreignId('run_id')->constrained()->cascadeOnDelete();
             $table->nullableMorphs('resource');
             $table->json('metadata')->nullable();
             $table->longText('exception')->nullable();
@@ -45,9 +45,9 @@ return new class extends Migration
             $table->timestamp('failed_at')->nullable();
             $table->timestamps();
 
-            $table->index(['progress_id', 'completed_at']);
-            $table->index(['progress_id', 'failed_at']);
-            $table->index(['progress_id', 'created_at']);
+            $table->index(['run_id', 'completed_at']);
+            $table->index(['run_id', 'failed_at']);
+            $table->index(['run_id', 'created_at']);
         });
     }
 
@@ -56,7 +56,7 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('progress_items');
-        Schema::dropIfExists('progress');
+        Schema::dropIfExists('run_items');
+        Schema::dropIfExists('runs');
     }
 };

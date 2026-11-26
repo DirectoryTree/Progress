@@ -2,14 +2,14 @@
 
 namespace DirectoryTree\Progress\Models;
 
-use DirectoryTree\Progress\Enums\ProgressStatus;
-use DirectoryTree\Progress\Models\Builders\ProgressItemBuilder;
+use DirectoryTree\Progress\Enums\RunStatus;
+use DirectoryTree\Progress\Models\Builders\RunItemBuilder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 
-class ProgressItem extends Model
+class RunItem extends Model
 {
     /**
      * The attributes that aren't mass assignable.
@@ -35,17 +35,17 @@ class ProgressItem extends Model
     /**
      * Create a new Eloquent query builder for the model.
      */
-    public function newEloquentBuilder($query): ProgressItemBuilder
+    public function newEloquentBuilder($query): RunItemBuilder
     {
-        return new ProgressItemBuilder($query);
+        return new RunItemBuilder($query);
     }
 
     /**
-     * The progress this item belongs to.
+     * The run this item belongs to.
      */
-    public function progress(): BelongsTo
+    public function run(): BelongsTo
     {
-        return $this->belongsTo(Progress::class);
+        return $this->belongsTo(Run::class);
     }
 
     /**
@@ -62,9 +62,9 @@ class ProgressItem extends Model
     protected function status(): Attribute
     {
         return Attribute::get(fn () => match (true) {
-            ! is_null($this->failed_at) => ProgressStatus::Failed,
-            ! is_null($this->completed_at) => ProgressStatus::Completed,
-            default => ProgressStatus::Pending,
+            ! is_null($this->failed_at) => RunStatus::Failed,
+            ! is_null($this->completed_at) => RunStatus::Completed,
+            default => RunStatus::Pending,
         })->withoutObjectCaching();
     }
 }

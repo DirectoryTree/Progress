@@ -5,14 +5,14 @@ namespace DirectoryTree\Progress\Models\Builders;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * @template TModel of \DirectoryTree\Progress\Models\Progress
+ * @template TModel of \DirectoryTree\Progress\Models\Run
  *
  * @extends Builder<TModel>
  */
-class ProgressBuilder extends Builder
+class RunBuilder extends Builder
 {
     /**
-     * Limit the query to active progress.
+     * Limit the query to active runs.
      */
     public function active(): static
     {
@@ -24,7 +24,7 @@ class ProgressBuilder extends Builder
     }
 
     /**
-     * Limit the query to completed progress.
+     * Limit the query to completed runs.
      */
     public function completed(): static
     {
@@ -32,7 +32,7 @@ class ProgressBuilder extends Builder
     }
 
     /**
-     * Limit the query to failed progress.
+     * Limit the query to failed runs.
      */
     public function failed(): static
     {
@@ -40,7 +40,7 @@ class ProgressBuilder extends Builder
     }
 
     /**
-     * Limit the query to cancelled progress.
+     * Limit the query to cancelled runs.
      */
     public function cancelled(): static
     {

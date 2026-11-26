@@ -5,11 +5,11 @@ namespace DirectoryTree\Progress\Models\Builders;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * @template TModel of \DirectoryTree\Progress\Models\ProgressItem
+ * @template TModel of \DirectoryTree\Progress\Models\RunItem
  *
  * @extends Builder<TModel>
  */
-class ProgressItemBuilder extends Builder
+class RunItemBuilder extends Builder
 {
     /**
      * Limit the query to completed items.

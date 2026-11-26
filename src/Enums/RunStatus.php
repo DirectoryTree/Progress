@@ -2,7 +2,7 @@
 
 namespace DirectoryTree\Progress\Enums;
 
-enum ProgressStatus: string
+enum RunStatus: string
 {
     case Pending = 'pending';
     case Running = 'running';
@@ -11,7 +11,7 @@ enum ProgressStatus: string
     case Cancelled = 'cancelled';
 
     /**
-     * Determine if the status represents an active progress.
+     * Determine if the status represents an active run.
      */
     public function active(): bool
     {

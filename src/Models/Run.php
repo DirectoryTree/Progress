@@ -3,8 +3,8 @@
 namespace DirectoryTree\Progress\Models;
 
 use BackedEnum;
-use DirectoryTree\Progress\Enums\ProgressStatus;
-use DirectoryTree\Progress\Models\Builders\ProgressBuilder;
+use DirectoryTree\Progress\Enums\RunStatus;
+use DirectoryTree\Progress\Models\Builders\RunBuilder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
 use InvalidArgumentException;
 use Throwable;
 
-class Progress extends Model
+class Run extends Model
 {
     /**
      * The model's default values for attributes.
@@ -53,9 +53,9 @@ class Progress extends Model
     /**
      * Create a new Eloquent query builder for the model.
      */
-    public function newEloquentBuilder($query): ProgressBuilder
+    public function newEloquentBuilder($query): RunBuilder
     {
-        return new ProgressBuilder($query);
+        return new RunBuilder($query);
     }
 
     /**
@@ -69,9 +69,9 @@ class Progress extends Model
         ?Model $owner = null,
         array $metadata = [],
     ): static {
-        $progress = new static;
+        $run = new static;
 
-        $progress->fill([
+        $run->fill([
             'name' => $name instanceof BackedEnum ? (string) $name->value : $name,
             'type' => $type instanceof BackedEnum ? (string) $type->value : $type,
             'subject_type' => $subject?->getMorphClass(),
@@ -80,10 +80,10 @@ class Progress extends Model
             'owner_id' => $owner?->getKey(),
             'total_items' => $total,
             'metadata' => $metadata ?: null,
-            'started_at' => $progress->freshTimestamp(),
+            'started_at' => $run->freshTimestamp(),
         ])->save();
 
-        return $progress;
+        return $run;
     }
 
     /**
@@ -95,22 +95,22 @@ class Progress extends Model
     }
 
     /**
-     * Restart the progress only if it has failed.
+     * Restart the run only if it has failed.
      */
     public function restartIfFailed(): static
     {
-        return $this->restartWhen(ProgressStatus::Failed);
+        return $this->restartWhen(RunStatus::Failed);
     }
 
     /**
-     * Restart the progress when its persisted status matches the given status.
+     * Restart the run when its persisted status matches the given status.
      */
-    protected function restartWhen(?ProgressStatus $status = null): static
+    protected function restartWhen(?RunStatus $status = null): static
     {
         return $this->getConnection()->transaction(function () use ($status) {
-            $progress = $this->newQuery()->lockForUpdate()->findOrFail($this->getKey());
+            $run = $this->newQuery()->lockForUpdate()->findOrFail($this->getKey());
 
-            $this->setRawAttributes($progress->getAttributes(), true)->unsetRelations();
+            $this->setRawAttributes($run->getAttributes(), true)->unsetRelations();
 
             if (! is_null($status) && $this->status !== $status) {
                 return $this;
@@ -141,7 +141,7 @@ class Progress extends Model
     }
 
     /**
-     * The model that owns this progress.
+     * The model that owns this run.
      */
     public function owner(): MorphTo
     {
@@ -149,15 +149,15 @@ class Progress extends Model
     }
 
     /**
-     * The items tracked by this progress.
+     * The items tracked by this run.
      */
     public function items(): HasMany
     {
-        return $this->hasMany(ProgressItem::class);
+        return $this->hasMany(RunItem::class);
     }
 
     /**
-     * Determine if the progress is active.
+     * Determine if the run is active.
      */
     public function isActive(): bool
     {
@@ -165,7 +165,7 @@ class Progress extends Model
     }
 
     /**
-     * Determine if the progress has finished.
+     * Determine if the run has finished.
      */
     public function finished(): bool
     {
@@ -175,7 +175,7 @@ class Progress extends Model
     }
 
     /**
-     * Determine if the progress has been cancelled.
+     * Determine if the run has been cancelled.
      */
     public function cancelled(): bool
     {
@@ -183,7 +183,7 @@ class Progress extends Model
     }
 
     /**
-     * Determine if the progress has failed items.
+     * Determine if the run has failed items.
      */
     public function hasFailures(): bool
     {
@@ -217,7 +217,7 @@ class Progress extends Model
      */
     public function percentage(): ?int
     {
-        if ($this->status === ProgressStatus::Completed) {
+        if ($this->status === RunStatus::Completed) {
             return 100;
         }
 
@@ -238,16 +238,16 @@ class Progress extends Model
     protected function status(): Attribute
     {
         return Attribute::get(fn () => match (true) {
-            ! is_null($this->cancelled_at) => ProgressStatus::Cancelled,
-            ! is_null($this->failed_at) => ProgressStatus::Failed,
-            ! is_null($this->completed_at) => ProgressStatus::Completed,
-            ! is_null($this->started_at) => ProgressStatus::Running,
-            default => ProgressStatus::Pending,
+            ! is_null($this->cancelled_at) => RunStatus::Cancelled,
+            ! is_null($this->failed_at) => RunStatus::Failed,
+            ! is_null($this->completed_at) => RunStatus::Completed,
+            ! is_null($this->started_at) => RunStatus::Running,
+            default => RunStatus::Pending,
         })->withoutObjectCaching();
     }
 
     /**
-     * Mark the progress as completed.
+     * Mark the run as completed.
      */
     public function complete(): bool
     {
@@ -255,7 +255,7 @@ class Progress extends Model
     }
 
     /**
-     * Mark the progress as failed.
+     * Mark the run as failed.
      */
     public function fail(?Throwable $exception = null): bool
     {
@@ -265,7 +265,7 @@ class Progress extends Model
     }
 
     /**
-     * Mark the progress as cancelled.
+     * Mark the run as cancelled.
      */
     public function cancel(): bool
     {
@@ -273,14 +273,14 @@ class Progress extends Model
     }
 
     /**
-     * Transition the progress to a terminal state.
+     * Transition the run to a terminal state.
      */
     protected function transitionTo(string $column, array $attributes = []): bool
     {
         return $this->getConnection()->transaction(function () use ($column, $attributes) {
-            $progress = $this->newQuery()->lockForUpdate()->findOrFail($this->getKey());
+            $run = $this->newQuery()->lockForUpdate()->findOrFail($this->getKey());
 
-            $this->setRawAttributes($progress->getAttributes(), true);
+            $this->setRawAttributes($run->getAttributes(), true);
 
             if (! is_null($this->{$column})) {
                 return true;
@@ -328,9 +328,9 @@ class Progress extends Model
     }
 
     /**
-     * Record a processed item for the progress.
+     * Record a processed item for the run.
      */
-    public function record(?Model $item = null, array $metadata = [], bool $count = true): ?ProgressItem
+    public function record(?Model $item = null, array $metadata = [], bool $count = true): ?RunItem
     {
         if (! $item) {
             if ($count) {
@@ -341,11 +341,11 @@ class Progress extends Model
         }
 
         if (! $item->exists) {
-            throw new InvalidArgumentException('Progress items must be persisted Eloquent models. Use missed() to record failures without a model.');
+            throw new InvalidArgumentException('Run items must be persisted Eloquent models. Use missed() to record failures without a model.');
         }
 
         return $this->getConnection()->transaction(function () use ($item, $metadata, $count) {
-            /** @var ProgressItem $record */
+            /** @var RunItem $record */
             $record = $this->items()->create([
                 'metadata' => $metadata ?: null,
                 'completed_at' => $this->freshTimestamp(),
@@ -362,14 +362,14 @@ class Progress extends Model
     }
 
     /**
-     * Record a missed item for the progress.
+     * Record a missed item for the run.
      */
     public function missed(
         ?Throwable $exception = null,
         ?Model $item = null,
         array $metadata = [],
         bool $count = true,
-    ): ?ProgressItem {
+    ): ?RunItem {
         if (! $exception && ! $item && ! $metadata) {
             if ($count) {
                 $this->incrementFailed();
@@ -379,11 +379,11 @@ class Progress extends Model
         }
 
         if ($item && ! $item->exists) {
-            throw new InvalidArgumentException('Progress items must be persisted Eloquent models.');
+            throw new InvalidArgumentException('Run items must be persisted Eloquent models.');
         }
 
         return $this->getConnection()->transaction(function () use ($exception, $item, $metadata, $count) {
-            /** @var ProgressItem $record */
+            /** @var RunItem $record */
             $record = $this->items()->create([
                 'resource_type' => $item?->getMorphClass(),
                 'resource_id' => $item?->getKey(),

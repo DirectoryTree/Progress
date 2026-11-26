@@ -1,10 +1,10 @@
 <?php
 
-use DirectoryTree\Progress\Concerns\InteractsWithProgress;
-use DirectoryTree\Progress\Contracts\TracksProgress;
-use DirectoryTree\Progress\Enums\ProgressStatus;
-use DirectoryTree\Progress\Middleware\TrackProgress;
-use DirectoryTree\Progress\Models\Progress;
+use DirectoryTree\Progress\Concerns\InteractsWithRun;
+use DirectoryTree\Progress\Contracts\TracksRun;
+use DirectoryTree\Progress\Enums\RunStatus;
+use DirectoryTree\Progress\Middleware\TrackRun;
+use DirectoryTree\Progress\Models\Run;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -40,43 +40,43 @@ it('attaches a pending progress before serializing the job', function () {
         'retry_after' => 90,
     ]]);
 
-    $job = new TrackedProgressJob;
+    $job = new TrackedRunJob;
 
     Queue::connection('database')->push($job);
 
-    $progress = Progress::sole();
+    $run = Run::sole();
     $payload = json_decode(DB::table('jobs')->value('payload'), true);
     $restored = unserialize($payload['data']['command']);
 
-    expect($progress)
-        ->status->toBe(ProgressStatus::Pending)
-        ->name->toBe('TrackedProgressJob')
+    expect($run)
+        ->status->toBe(RunStatus::Pending)
+        ->name->toBe('TrackedRunJob')
         ->started_at->toBeNull()
-        ->and($job->getProgress()->is($progress))->toBeTrue()
-        ->and($restored->progress->is($progress))->toBeTrue()
-        ->and($restored->middleware)->toBe([TrackProgress::class])
+        ->and($job->getRun()->is($run))->toBeTrue()
+        ->and($restored->run->is($run))->toBeTrue()
+        ->and($restored->middleware)->toBe([TrackRun::class])
         ->and($payload['data']['command'])->toContain('ModelIdentifier')
         ->and($payload['progress'])->toBe([
-            'class' => Progress::class,
-            'id' => $progress->getKey(),
+            'class' => Run::class,
+            'id' => $run->getKey(),
             'connection' => 'testing',
         ]);
 
     Queue::connection('database')->push($job);
 
-    expect($job->middleware)->toBe([TrackProgress::class])
-        ->and(Progress::count())->toBe(1);
+    expect($job->middleware)->toBe([TrackRun::class])
+        ->and(Run::count())->toBe(1);
 });
 
 it('automatically starts and completes progress on the sync queue', function () {
-    TrackedProgressJob::dispatchSync();
+    TrackedRunJob::dispatchSync();
 
-    expect(Progress::sole())
-        ->status->toBe(ProgressStatus::Completed)
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Completed)
         ->processed_items->toBe(1)
         ->started_at->not->toBeNull()
         ->completed_at->not->toBeNull()
-        ->and(config('progress-testing.status'))->toBe(ProgressStatus::Running);
+        ->and(config('progress-testing.status'))->toBe(RunStatus::Running);
 });
 
 it('only creates progress for unique jobs that are actually dispatched', function () {
@@ -102,39 +102,39 @@ it('only creates progress for unique jobs that are actually dispatched', functio
         ],
     ]);
 
-    UniqueTrackedProgressJob::dispatch();
-    UniqueTrackedProgressJob::dispatch();
+    UniqueTrackedRunJob::dispatch();
+    UniqueTrackedRunJob::dispatch();
 
-    expect(Progress::count())->toBe(1)
-        ->and(Progress::sole()->status)->toBe(ProgressStatus::Pending)
+    expect(Run::count())->toBe(1)
+        ->and(Run::sole()->status)->toBe(RunStatus::Pending)
         ->and(DB::table('jobs')->count())->toBe(1);
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0])
         ->assertExitCode(0);
 
-    expect(Progress::sole()->status)->toBe(ProgressStatus::Completed);
+    expect(Run::sole()->status)->toBe(RunStatus::Completed);
 
-    UniqueTrackedProgressJob::dispatch();
+    UniqueTrackedRunJob::dispatch();
 
-    expect(Progress::count())->toBe(2)
+    expect(Run::count())->toBe(2)
         ->and(DB::table('jobs')->count())->toBe(1);
 });
 
 it('allows jobs to customize their progress and retain their own middleware', function () {
     config(['progress-testing.order' => []]);
 
-    $job = (new CustomizedTrackedProgressJob)->through([TrackedProgressPropertyMiddleware::class]);
+    $job = (new CustomizedTrackedRunJob)->through([TrackedRunPropertyMiddleware::class]);
 
     Queue::connection('sync')->push($job);
 
-    expect(Progress::sole())
+    expect(Run::sole())
         ->name->toBe('Sync contacts')
         ->type->toBe('crm')
         ->total_items->toBe(10)
         ->metadata->toBe(['source' => 'contacts.csv'])
-        ->status->toBe(ProgressStatus::Completed)
+        ->status->toBe(RunStatus::Completed)
         ->and(config('progress-testing.order'))->toBe(['method', 'property', 'handle'])
-        ->and($job->middleware)->toBe([TrackedProgressPropertyMiddleware::class, TrackProgress::class]);
+        ->and($job->middleware)->toBe([TrackedRunPropertyMiddleware::class, TrackRun::class]);
 });
 
 it('preserves job failure callbacks and marks progress failed automatically', function (bool $callbackFails) {
@@ -143,26 +143,26 @@ it('preserves job failure callbacks and marks progress failed automatically', fu
         'progress-testing.fail-callback' => $callbackFails,
     ]);
 
-    expect(fn () => TrackedProgressWithFailureCallbackJob::dispatchSync())
+    expect(fn () => TrackedRunWithFailureCallbackJob::dispatchSync())
         ->toThrow(RuntimeException::class, $callbackFails ? 'Failure callback failed' : 'Unable to finish sync');
 
-    $progress = Progress::sole();
+    $run = Run::sole();
 
-    expect($progress)
-        ->status->toBe(ProgressStatus::Failed)
+    expect($run)
+        ->status->toBe(RunStatus::Failed)
         ->processed_items->toBe(1)
         ->completed_at->toBeNull()
         ->exception->toContain('Unable to finish sync')
-        ->and(config('progress-testing.failed-progress'))->toBe($progress->getKey());
+        ->and(config('progress-testing.failed-progress'))->toBe($run->getKey());
 })->with([false, true]);
 
 it('does not complete progress when its job explicitly fails', function () {
     config(['progress-testing.action' => 'fail']);
 
-    TrackedProgressJob::dispatchSync();
+    TrackedRunJob::dispatchSync();
 
-    expect(Progress::sole())
-        ->status->toBe(ProgressStatus::Failed)
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Failed)
         ->processed_items->toBe(1)
         ->completed_at->toBeNull()
         ->exception->toContain('Manually failed sync');
@@ -171,34 +171,34 @@ it('does not complete progress when its job explicitly fails', function () {
 it('does not override cancellation during handling', function () {
     config(['progress-testing.action' => 'cancel']);
 
-    TrackedProgressJob::dispatchSync();
+    TrackedRunJob::dispatchSync();
 
-    expect(Progress::sole())
-        ->status->toBe(ProgressStatus::Cancelled)
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Cancelled)
         ->completed_at->toBeNull();
 });
 
 it('skips completed and cancelled progress without changing their state', function (string $transition) {
-    $progress = Progress::start();
-    $progress->missed(metadata: ['row' => 1]);
-    $progress->{$transition}();
-    $attributes = $progress->fresh()->getAttributes();
+    $run = Run::start();
+    $run->missed(metadata: ['row' => 1]);
+    $run->{$transition}();
+    $attributes = $run->fresh()->getAttributes();
 
-    Queue::connection('sync')->push((new TrackedProgressJob)->setProgress($progress));
+    Queue::connection('sync')->push((new TrackedRunJob)->setRun($run));
 
-    expect($progress->fresh()->getAttributes())->toBe($attributes)
-        ->and($progress->items)->toHaveCount(1)
+    expect($run->fresh()->getAttributes())->toBe($attributes)
+        ->and($run->items)->toHaveCount(1)
         ->and(config('progress-testing.status'))->toBeNull()
-        ->and(Progress::count())->toBe(1);
+        ->and(Run::count())->toBe(1);
 })->with(['complete', 'cancel']);
 
 it('leaves the progress pending when earlier middleware releases the job', function () {
     Queue::connection('sync')->push(
-        (new TrackedProgressJob)->through([ReleaseTrackedProgressMiddleware::class])
+        (new TrackedRunJob)->through([ReleaseTrackedRunMiddleware::class])
     );
 
-    expect(Progress::sole())
-        ->status->toBe(ProgressStatus::Pending)
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Pending)
         ->started_at->toBeNull()
         ->processed_items->toBe(0)
         ->and(config('progress-testing.status'))->toBeNull();
@@ -206,20 +206,20 @@ it('leaves the progress pending when earlier middleware releases the job', funct
 
 it('marks the progress failed when earlier middleware throws', function () {
     expect(fn () => Queue::connection('sync')->push(
-        (new TrackedProgressJob)->through([FailTrackedProgressMiddleware::class])
+        (new TrackedRunJob)->through([FailTrackedRunMiddleware::class])
     ))->toThrow(RuntimeException::class, 'Middleware failed');
 
-    expect(Progress::sole())
-        ->status->toBe(ProgressStatus::Failed)
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Failed)
         ->started_at->toBeNull()
         ->processed_items->toBe(0)
         ->exception->toContain('Middleware failed');
 });
 
-it('waits for outer middleware before completing progress', function (string $action, ProgressStatus $status) {
+it('waits for outer middleware before completing progress', function (string $action, RunStatus $status) {
     config(['progress-testing.after-handle' => $action]);
 
-    $job = (new TrackedProgressJob)->through([AfterTrackedProgressMiddleware::class]);
+    $job = (new TrackedRunJob)->through([AfterTrackedRunMiddleware::class]);
 
     if ($action === 'throw') {
         expect(fn () => Queue::connection('sync')->push($job))
@@ -228,26 +228,26 @@ it('waits for outer middleware before completing progress', function (string $ac
         Queue::connection('sync')->push($job);
     }
 
-    expect(Progress::sole())
+    expect(Run::sole())
         ->status->toBe($status)
         ->processed_items->toBe(1)
-        ->and(is_null(Progress::sole()->completed_at))->toBe($status !== ProgressStatus::Completed);
+        ->and(is_null(Run::sole()->completed_at))->toBe($status !== RunStatus::Completed);
 })->with([
-    'failed' => ['throw', ProgressStatus::Failed],
-    'released' => ['release', ProgressStatus::Running],
-    'completed' => ['continue', ProgressStatus::Completed],
+    'failed' => ['throw', RunStatus::Failed],
+    'released' => ['release', RunStatus::Running],
+    'completed' => ['continue', RunStatus::Completed],
 ]);
 
 it('does not complete active progress when earlier middleware skips handling', function () {
-    $progress = Progress::start();
-    $progress->advance();
+    $run = Run::start();
+    $run->advance();
 
     Queue::connection('sync')->push(
-        (new TrackedProgressJob)->setProgress($progress)->through([SkipTrackedProgressMiddleware::class])
+        (new TrackedRunJob)->setRun($run)->through([SkipTrackedRunMiddleware::class])
     );
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Running)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Running)
         ->processed_items->toBe(1)
         ->completed_at->toBeNull()
         ->and(config('progress-testing.status'))->toBeNull();
@@ -276,32 +276,32 @@ it('preserves counters when a job is released or retried automatically', functio
         'progress-testing.action' => $action,
     ]);
 
-    TrackedProgressJob::dispatch();
+    TrackedRunJob::dispatch();
 
-    $progress = Progress::sole();
+    $run = Run::sole();
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0, '--tries' => 2])
         ->assertExitCode(0);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Running)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Running)
         ->processed_items->toBe(1)
         ->failed_at->toBeNull()
         ->completed_at->toBeNull()
         ->and(DB::table('jobs')->count())->toBe(1);
 
-    $startedAt = $progress->started_at;
+    $startedAt = $run->started_at;
 
     config(['progress-testing.action' => null]);
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0, '--tries' => 2])
         ->assertExitCode(0);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Completed)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Completed)
         ->processed_items->toBe(2)
         ->started_at->toEqual($startedAt)
-        ->and(Progress::count())->toBe(1)
+        ->and(Run::count())->toBe(1)
         ->and(DB::table('jobs')->count())->toBe(0);
 })->with(['release', 'throw']);
 
@@ -346,39 +346,39 @@ it('restarts the same progress after terminal failure and queue retry', function
 
     $jobClass::dispatch();
 
-    $progress = Progress::sole();
+    $run = Run::sole();
 
     artisan('queue:work', ['--stop-when-empty' => true, '--sleep' => 0, '--tries' => 2])
         ->assertExitCode(0);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Failed)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Failed)
         ->processed_items->toBe(2)
         ->exception->toContain('Unable to finish sync')
         ->and(DB::table('failed_jobs')->count())->toBe(1);
 
-    $progress->missed(metadata: ['row' => 1]);
+    $run->missed(metadata: ['row' => 1]);
 
     config(['progress-testing.action' => null]);
 
     artisan('queue:retry', ['id' => [DB::table('failed_jobs')->value('uuid')]])
         ->assertExitCode(0);
 
-    expect($progress->fresh()->status)->toBe(ProgressStatus::Failed);
+    expect($run->fresh()->status)->toBe(RunStatus::Failed);
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0])
         ->assertExitCode(0);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Completed)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Completed)
         ->processed_items->toBe(1)
         ->failed_items->toBe(0)
         ->failed_at->toBeNull()
         ->exception->toBeNull()
-        ->and($progress->items)->toHaveCount(0)
-        ->and(Progress::count())->toBe(1)
+        ->and($run->items)->toHaveCount(0)
+        ->and(Run::count())->toBe(1)
         ->and(DB::table('failed_jobs')->count())->toBe(0);
-})->with([TrackedProgressJob::class, EncryptedTrackedProgressJob::class]);
+})->with([TrackedRunJob::class, EncryptedTrackedRunJob::class]);
 
 it('restarts progress when original payloads are replayed with a new queue uuid', function (string $jobClass) {
     Schema::create('jobs', function (Blueprint $table) {
@@ -405,12 +405,12 @@ it('restarts progress when original payloads are replayed with a new queue uuid'
 
     $jobClass::dispatch();
 
-    $progress = Progress::sole();
+    $run = Run::sole();
     $payload = json_decode(DB::table('jobs')->value('payload'), true);
     DB::table('jobs')->delete();
 
-    $progress->missed(metadata: ['row' => 1]);
-    $progress->fail();
+    $run->missed(metadata: ['row' => 1]);
+    $run->fail();
 
     $payload['retry_of'] = $payload['uuid'];
     $payload['uuid'] = (string) Str::uuid();
@@ -425,14 +425,14 @@ it('restarts progress when original payloads are replayed with a new queue uuid'
 
     Event::assertNotDispatched(JobRetryRequested::class);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Completed)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Completed)
         ->processed_items->toBe(1)
         ->failed_items->toBe(0)
         ->failed_at->toBeNull()
-        ->and($progress->items)->toHaveCount(0)
-        ->and(Progress::count())->toBe(1);
-})->with([TrackedProgressJob::class, EncryptedTrackedProgressJob::class]);
+        ->and($run->items)->toHaveCount(0)
+        ->and(Run::count())->toBe(1);
+})->with([TrackedRunJob::class, EncryptedTrackedRunJob::class]);
 
 it('rolls back pending progress creation with an after-commit database dispatch', function () {
     Schema::create('jobs', function (Blueprint $table) {
@@ -455,14 +455,14 @@ it('rolls back pending progress creation with an after-commit database dispatch'
 
     DB::beginTransaction();
 
-    Queue::connection('database')->push((new TrackedProgressJob)->afterCommit());
+    Queue::connection('database')->push((new TrackedRunJob)->afterCommit());
 
-    expect(Progress::sole()->status)->toBe(ProgressStatus::Pending)
+    expect(Run::sole()->status)->toBe(RunStatus::Pending)
         ->and(DB::table('jobs')->count())->toBe(0);
 
     DB::rollBack();
 
-    expect(Progress::count())->toBe(0)
+    expect(Run::count())->toBe(0)
         ->and(DB::table('jobs')->count())->toBe(0);
 });
 
@@ -499,23 +499,23 @@ it('dispatches and processes the pending progress after a transaction commits', 
 
     DB::beginTransaction();
 
-    Queue::connection('database')->push((new TrackedProgressJob)->afterCommit());
+    Queue::connection('database')->push((new TrackedRunJob)->afterCommit());
 
-    $progress = Progress::sole();
+    $run = Run::sole();
 
-    expect($progress->status)->toBe(ProgressStatus::Pending)
+    expect($run->status)->toBe(RunStatus::Pending)
         ->and(DB::table('jobs')->count())->toBe(0);
 
     DB::commit();
 
-    expect($progress->fresh()->status)->toBe(ProgressStatus::Pending)
+    expect($run->fresh()->status)->toBe(RunStatus::Pending)
         ->and(DB::table('jobs')->count())->toBe(1);
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0])
         ->assertExitCode(0);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Completed)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Completed)
         ->processed_items->toBe(1)
         ->and(DB::table('jobs')->count())->toBe(0);
 });
@@ -523,30 +523,30 @@ it('dispatches and processes the pending progress after a transaction commits', 
 it('creates independent managed progress for chained jobs', function () {
     config(['queue.default' => 'sync']);
 
-    Bus::chain([new TrackedProgressJob, new TrackedProgressJob])->dispatch();
+    Bus::chain([new TrackedRunJob, new TrackedRunJob])->dispatch();
 
-    expect(Progress::count())->toBe(2)
-        ->and(Progress::completed()->count())->toBe(2)
-        ->and(Progress::pluck('processed_items')->all())->toBe([1, 1]);
+    expect(Run::count())->toBe(2)
+        ->and(Run::completed()->count())->toBe(2)
+        ->and(Run::pluck('processed_items')->all())->toBe([1, 1]);
 });
 
 it('does not create progress for faked dispatches', function () {
     Queue::fake();
 
-    TrackedProgressJob::dispatch();
+    TrackedRunJob::dispatch();
 
-    Queue::assertPushed(TrackedProgressJob::class);
+    Queue::assertPushed(TrackedRunJob::class);
 
     Bus::fake();
 
-    TrackedProgressJob::dispatch();
+    TrackedRunJob::dispatch();
 
-    Bus::assertDispatched(TrackedProgressJob::class);
+    Bus::assertDispatched(TrackedRunJob::class);
 
-    expect(Progress::count())->toBe(0);
+    expect(Run::count())->toBe(0);
 });
 
-it('tracks custom progress models on their configured connection', function (?string $action, ProgressStatus $status) {
+it('tracks custom progress models on their configured connection', function (?string $action, RunStatus $status) {
     config([
         'database.connections.progress-testing' => config('database.connections.testing'),
         'progress-testing.action' => $action,
@@ -560,19 +560,19 @@ it('tracks custom progress models on their configured connection', function (?st
     ])->assertExitCode(0);
 
     if ($action === 'throw') {
-        expect(fn () => CustomModelTrackedProgressJob::dispatchSync())
+        expect(fn () => CustomModelTrackedRunJob::dispatchSync())
             ->toThrow(RuntimeException::class, 'Unable to finish sync');
     } else {
-        CustomModelTrackedProgressJob::dispatchSync();
+        CustomModelTrackedRunJob::dispatchSync();
     }
 
-    expect(CustomTrackedProgress::on('progress-testing')->sole())
+    expect(CustomTrackedRun::on('progress-testing')->sole())
         ->status->toBe($status)
         ->processed_items->toBe(1)
-        ->and(Progress::count())->toBe(0);
+        ->and(Run::count())->toBe(0);
 })->with([
-    'completed' => [null, ProgressStatus::Completed],
-    'failed' => ['throw', ProgressStatus::Failed],
+    'completed' => [null, RunStatus::Completed],
+    'failed' => ['throw', RunStatus::Failed],
 ]);
 
 it('fails pending progress when queue attempts are exhausted before handling', function () {
@@ -598,15 +598,15 @@ it('fails pending progress when queue attempts are exhausted before handling', f
         'queue.failed.driver' => null,
     ]);
 
-    TrackedProgressJob::dispatch();
+    TrackedRunJob::dispatch();
 
     DB::table('jobs')->update(['attempts' => 1]);
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0, '--tries' => 1])
         ->assertExitCode(0);
 
-    expect(Progress::sole())
-        ->status->toBe(ProgressStatus::Failed)
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Failed)
         ->started_at->toBeNull()
         ->processed_items->toBe(0)
         ->exception->toContain('MaxAttemptsExceededException')
@@ -614,66 +614,66 @@ it('fails pending progress when queue attempts are exhausted before handling', f
 });
 
 it('does not replace missing progress exceptions with failure listener errors', function () {
-    $progress = Progress::create();
-    $progress->delete();
+    $run = Run::create();
+    $run->delete();
 
-    expect(fn () => Queue::connection('sync')->push((new TrackedProgressJob)->setProgress($progress)))
+    expect(fn () => Queue::connection('sync')->push((new TrackedRunJob)->setRun($run)))
         ->toThrow(ModelNotFoundException::class);
 
-    expect(Progress::count())->toBe(0)
+    expect(Run::count())->toBe(0)
         ->and(config('progress-testing.status'))->toBeNull();
 });
 
 it('does not manage progress without the opt-in interface', function () {
-    $progress = Progress::start();
+    $run = Run::start();
 
-    Queue::connection('sync')->push((new ManuallyTrackedProgressJob)->setProgress($progress));
+    Queue::connection('sync')->push((new ManuallyTrackedRunJob)->setRun($run));
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Running)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Running)
         ->processed_items->toBe(1);
 
     config(['progress-testing.action' => 'throw']);
 
-    expect(fn () => Queue::connection('sync')->push((new ManuallyTrackedProgressJob)->setProgress($progress)))
+    expect(fn () => Queue::connection('sync')->push((new ManuallyTrackedRunJob)->setRun($run)))
         ->toThrow(RuntimeException::class, 'Unmanaged failure');
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Running)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Running)
         ->processed_items->toBe(2)
         ->failed_at->toBeNull()
-        ->and(Progress::count())->toBe(1);
+        ->and(Run::count())->toBe(1);
 });
 
-class TrackedProgressJob implements ShouldQueue, TracksProgress
+class TrackedRunJob implements ShouldQueue, TracksRun
 {
-    use InteractsWithProgress, Queueable;
+    use InteractsWithRun, Queueable;
 
     public function handle(): void
     {
-        config(['progress-testing.status' => $this->progress->status]);
+        config(['progress-testing.status' => $this->run->status]);
 
-        $this->progress->advance();
+        $this->run->advance();
 
         match (config('progress-testing.action')) {
             'throw' => throw new RuntimeException('Unable to finish sync'),
             'release' => $this->release(),
             'fail' => $this->fail(new RuntimeException('Manually failed sync')),
-            'cancel' => $this->progress->cancel(),
+            'cancel' => $this->run->cancel(),
             default => null,
         };
     }
 }
 
-class EncryptedTrackedProgressJob extends TrackedProgressJob implements ShouldBeEncrypted {}
+class EncryptedTrackedRunJob extends TrackedRunJob implements ShouldBeEncrypted {}
 
-class UniqueTrackedProgressJob extends TrackedProgressJob implements ShouldBeUnique {}
+class UniqueTrackedRunJob extends TrackedRunJob implements ShouldBeUnique {}
 
-class TrackedProgressWithFailureCallbackJob extends TrackedProgressJob
+class TrackedRunWithFailureCallbackJob extends TrackedRunJob
 {
     public function failed(?Throwable $exception): void
     {
-        config(['progress-testing.failed-progress' => $this->progress->getKey()]);
+        config(['progress-testing.failed-progress' => $this->run->getKey()]);
 
         if (config('progress-testing.fail-callback')) {
             throw new RuntimeException('Failure callback failed');
@@ -681,24 +681,24 @@ class TrackedProgressWithFailureCallbackJob extends TrackedProgressJob
     }
 }
 
-class CustomTrackedProgress extends Progress
+class CustomTrackedRun extends Run
 {
-    protected $table = 'progress';
+    protected $table = 'runs';
 }
 
-class CustomModelTrackedProgressJob extends TrackedProgressJob
+class CustomModelTrackedRunJob extends TrackedRunJob
 {
-    public function createProgress(): Progress
+    public function createRun(): Run
     {
-        return CustomTrackedProgress::on('progress-testing')->create(['name' => 'Sync contacts']);
+        return CustomTrackedRun::on('progress-testing')->create(['name' => 'Sync contacts']);
     }
 }
 
-class CustomizedTrackedProgressJob extends TrackedProgressJob
+class CustomizedTrackedRunJob extends TrackedRunJob
 {
-    public function createProgress(): Progress
+    public function createRun(): Run
     {
-        return Progress::create([
+        return Run::create([
             'name' => 'Sync contacts',
             'type' => 'crm',
             'total_items' => 10,
@@ -708,7 +708,7 @@ class CustomizedTrackedProgressJob extends TrackedProgressJob
 
     public function middleware(): array
     {
-        return [TrackedProgressMethodMiddleware::class];
+        return [TrackedRunMethodMiddleware::class];
     }
 
     public function handle(): void
@@ -719,7 +719,7 @@ class CustomizedTrackedProgressJob extends TrackedProgressJob
     }
 }
 
-class TrackedProgressMethodMiddleware
+class TrackedRunMethodMiddleware
 {
     public function handle(object $job, Closure $next): mixed
     {
@@ -729,7 +729,7 @@ class TrackedProgressMethodMiddleware
     }
 }
 
-class TrackedProgressPropertyMiddleware
+class TrackedRunPropertyMiddleware
 {
     public function handle(object $job, Closure $next): mixed
     {
@@ -739,7 +739,7 @@ class TrackedProgressPropertyMiddleware
     }
 }
 
-class ReleaseTrackedProgressMiddleware
+class ReleaseTrackedRunMiddleware
 {
     public function handle(object $job, Closure $next): void
     {
@@ -747,7 +747,7 @@ class ReleaseTrackedProgressMiddleware
     }
 }
 
-class FailTrackedProgressMiddleware
+class FailTrackedRunMiddleware
 {
     public function handle(object $job, Closure $next): void
     {
@@ -755,13 +755,13 @@ class FailTrackedProgressMiddleware
     }
 }
 
-class AfterTrackedProgressMiddleware
+class AfterTrackedRunMiddleware
 {
     public function handle(object $job, Closure $next): mixed
     {
         $result = $next($job);
 
-        expect($job->progress->fresh()->status)->toBe(ProgressStatus::Running);
+        expect($job->run->fresh()->status)->toBe(RunStatus::Running);
 
         if (config('progress-testing.after-handle') === 'throw') {
             throw new RuntimeException('Middleware failed after handling');
@@ -775,18 +775,18 @@ class AfterTrackedProgressMiddleware
     }
 }
 
-class SkipTrackedProgressMiddleware
+class SkipTrackedRunMiddleware
 {
     public function handle(object $job, Closure $next): void {}
 }
 
-class ManuallyTrackedProgressJob implements ShouldQueue
+class ManuallyTrackedRunJob implements ShouldQueue
 {
-    use InteractsWithProgress, Queueable;
+    use InteractsWithRun, Queueable;
 
     public function handle(): void
     {
-        $this->progress->advance();
+        $this->run->advance();
 
         if (config('progress-testing.action') === 'throw') {
             throw new RuntimeException('Unmanaged failure');

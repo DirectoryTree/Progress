@@ -1,9 +1,9 @@
 <?php
 
-use DirectoryTree\Progress\Enums\ProgressStatus;
-use DirectoryTree\Progress\Middleware\RestartFailedProgress;
-use DirectoryTree\Progress\Middleware\SkipIfProgressFinished;
-use DirectoryTree\Progress\Models\Progress;
+use DirectoryTree\Progress\Enums\RunStatus;
+use DirectoryTree\Progress\Middleware\RestartFailedRun;
+use DirectoryTree\Progress\Middleware\SkipIfRunFinished;
+use DirectoryTree\Progress\Models\Run;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Queue\Queueable;
@@ -16,66 +16,66 @@ use Illuminate\Support\Str;
 
 use function Pest\Laravel\artisan;
 
-it('restarts failed progress before handling jobs', function () {
-    $progress = Progress::start(name: 'Sync contacts', total: 2, metadata: ['source' => 'crm']);
-    $progress->missed(new RuntimeException('Unable to sync contact'), metadata: ['row' => 1]);
-    $progress->fail(new RuntimeException('Unable to finish sync'));
-    $progress->load('items');
+it('restarts failed run before handling jobs', function () {
+    $run = Run::start(name: 'Sync contacts', total: 2, metadata: ['source' => 'crm']);
+    $run->missed(new RuntimeException('Unable to sync contact'), metadata: ['row' => 1]);
+    $run->fail(new RuntimeException('Unable to finish sync'));
+    $run->load('items');
 
-    $job = new MiddlewareProgressJob($progress);
+    $job = new MiddlewareRunJob($run);
     $transactionLevel = DB::transactionLevel();
 
-    $result = (new RestartFailedProgress($progress))->handle($job, function ($command) use ($job, $transactionLevel) {
+    $result = (new RestartFailedRun($run))->handle($job, function ($command) use ($job, $transactionLevel) {
         expect($command)->toBe($job)
-            ->and($command->progress)
-            ->status->toBe(ProgressStatus::Running)
+            ->and($command->run)
+            ->status->toBe(RunStatus::Running)
             ->processed_items->toBe(0)
             ->failed_items->toBe(0)
             ->exception->toBeNull()
             ->metadata->toBe(['source' => 'crm'])
             ->total_items->toBe(2)
-            ->and($command->progress->items)->toHaveCount(0)
+            ->and($command->run->items)->toHaveCount(0)
             ->and(DB::transactionLevel())->toBe($transactionLevel);
 
-        $command->progress->advance();
+        $command->run->advance();
 
         return 'handled';
     });
 
     expect($result)->toBe('handled')
-        ->and($progress->fresh()->processed_items)->toBe(1)
-        ->and($progress->fresh()->status)->toBe(ProgressStatus::Running)
-        ->and(Progress::query()->count())->toBe(1);
+        ->and($run->fresh()->processed_items)->toBe(1)
+        ->and($run->fresh()->status)->toBe(RunStatus::Running)
+        ->and(Run::query()->count())->toBe(1);
 });
 
-it('preserves progress for pending and running progress', function (ProgressStatus $status) {
-    $progress = $status === ProgressStatus::Pending ? Progress::query()->create() : Progress::start();
-    $progress->missed(metadata: ['row' => 1]);
-    $startedAt = $progress->started_at;
+it('preserves progress for pending and running progress', function (RunStatus $status) {
+    $run = $status === RunStatus::Pending ? Run::query()->create() : Run::start();
+    $run->missed(metadata: ['row' => 1]);
+    $startedAt = $run->started_at;
 
-    $result = (new RestartFailedProgress($progress))->handle(new MiddlewareProgressJob($progress), function ($job) use ($status, $startedAt) {
-        expect($job->progress)
+    $result = (new RestartFailedRun($run))->handle(new MiddlewareRunJob($run), function ($job) use ($status, $startedAt) {
+        expect($job->run)
             ->status->toBe($status)
             ->processed_items->toBe(1)
             ->failed_items->toBe(1)
             ->started_at->toEqual($startedAt)
-            ->and($job->progress->items)->toHaveCount(1);
+            ->and($job->run->items)->toHaveCount(1);
 
         return 'handled';
     });
 
     expect($result)->toBe('handled')
-        ->and($progress->fresh()->status)->toBe($status);
-})->with([ProgressStatus::Pending, ProgressStatus::Running]);
+        ->and($run->fresh()->status)->toBe($status);
+})->with([RunStatus::Pending, RunStatus::Running]);
 
-it('continues handling completed and cancelled progress without restarting them', function (string $transition, ProgressStatus $status) {
-    $progress = Progress::start();
-    $progress->missed(metadata: ['row' => 1]);
-    $middleware = new RestartFailedProgress($progress);
+it('continues handling completed and cancelled progress without restarting them', function (string $transition, RunStatus $status) {
+    $run = Run::start();
+    $run->missed(metadata: ['row' => 1]);
+    $middleware = new RestartFailedRun($run);
 
-    $progress->fresh()->{$transition}();
+    $run->fresh()->{$transition}();
 
-    $job = new MiddlewareProgressJob($progress);
+    $job = new MiddlewareRunJob($run);
 
     $result = $middleware->handle($job, function ($command) use ($job) {
         expect($command)->toBe($job);
@@ -84,74 +84,74 @@ it('continues handling completed and cancelled progress without restarting them'
     });
 
     expect($result)->toBe('handled')
-        ->and($progress)
+        ->and($run)
         ->status->toBe($status)
         ->processed_items->toBe(1)
         ->failed_items->toBe(1)
-        ->and($progress->items)->toHaveCount(1);
+        ->and($run->items)->toHaveCount(1);
 })->with([
-    'completed' => ['complete', ProgressStatus::Completed],
-    'cancelled' => ['cancel', ProgressStatus::Cancelled],
+    'completed' => ['complete', RunStatus::Completed],
+    'cancelled' => ['cancel', RunStatus::Cancelled],
 ]);
 
 it('detects failures recorded after the progress was loaded', function () {
-    $progress = Progress::start();
-    $middleware = new RestartFailedProgress($progress);
+    $run = Run::start();
+    $middleware = new RestartFailedRun($run);
 
-    $persisted = $progress->fresh();
+    $persisted = $run->fresh();
     $persisted->missed(metadata: ['row' => 1]);
     $persisted->fail();
 
-    $middleware->handle(new MiddlewareProgressJob($progress), function ($job) {
-        expect($job->progress)
-            ->status->toBe(ProgressStatus::Running)
+    $middleware->handle(new MiddlewareRunJob($run), function ($job) {
+        expect($job->run)
+            ->status->toBe(RunStatus::Running)
             ->processed_items->toBe(0)
             ->failed_items->toBe(0)
-            ->and($job->progress->items)->toHaveCount(0);
+            ->and($job->run->items)->toHaveCount(0);
     });
 });
 
 it('does not reset progress again from a stale failed reference', function () {
-    $progress = Progress::start();
-    $progress->missed(metadata: ['row' => 1]);
-    $progress->fail();
+    $run = Run::start();
+    $run->missed(metadata: ['row' => 1]);
+    $run->fail();
 
-    $staleProgress = $progress->fresh();
-    $staleProgress->load('items');
+    $staleRun = $run->fresh();
+    $staleRun->load('items');
 
-    (new RestartFailedProgress($progress))->handle(new MiddlewareProgressJob($progress), function ($job) {
-        $job->progress->advance();
+    (new RestartFailedRun($run))->handle(new MiddlewareRunJob($run), function ($job) {
+        $job->run->advance();
     });
 
-    (new RestartFailedProgress($staleProgress))->handle(new MiddlewareProgressJob($staleProgress), function ($job) {
-        expect($job->progress)
-            ->status->toBe(ProgressStatus::Running)
+    (new RestartFailedRun($staleRun))->handle(new MiddlewareRunJob($staleRun), function ($job) {
+        expect($job->run)
+            ->status->toBe(RunStatus::Running)
             ->processed_items->toBe(1)
             ->failed_items->toBe(0)
-            ->and($job->progress->items)->toHaveCount(0);
+            ->and($job->run->items)->toHaveCount(0);
 
-        $job->progress->advance();
+        $job->run->advance();
     });
 
-    expect($progress->fresh()->processed_items)->toBe(2);
+    expect($run->fresh()->processed_items)->toBe(2);
 });
 
 it('propagates job exceptions without failing or resetting active progress', function () {
-    $progress = Progress::start();
-    $progress->missed(metadata: ['row' => 1]);
+    $run = Run::start();
+    $run->missed(metadata: ['row' => 1]);
 
-    expect(fn () => (new RestartFailedProgress($progress))->handle(new MiddlewareProgressJob($progress), function ($job) {
-        $job->progress->advance();
+    expect(fn () => (new RestartFailedRun($run))->handle(new MiddlewareRunJob($run), function ($job) {
+        $job->run->advance();
 
         throw new RuntimeException('Unable to finish sync');
     }))->toThrow(RuntimeException::class, 'Unable to finish sync');
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Running)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Running)
         ->processed_items->toBe(2)
         ->failed_items->toBe(1)
         ->exception->toBeNull()
-        ->and($progress->items)->toHaveCount(1);
+        ->and($run->items)->toHaveCount(1);
 });
 
 it('preserves automatic queue progress and restarts after queue retry', function () {
@@ -192,14 +192,14 @@ it('preserves automatic queue progress and restarts after queue retry', function
         'progress-testing.fail' => true,
     ]);
 
-    $progress = Progress::start(total: 3);
-    MiddlewareProgressJob::dispatch($progress);
+    $run = Run::start(total: 3);
+    MiddlewareRunJob::dispatch($run);
 
     artisan('queue:work', ['--stop-when-empty' => true, '--sleep' => 0, '--tries' => 2])
         ->assertExitCode(0);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Failed)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Failed)
         ->processed_items->toBe(2)
         ->exception->toContain('Unable to finish sync')
         ->and(DB::table('failed_jobs')->count())->toBe(1);
@@ -215,16 +215,16 @@ it('preserves automatic queue progress and restarts after queue retry', function
     artisan('queue:work', ['--once' => true, '--sleep' => 0])
         ->assertExitCode(0);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Completed)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Completed)
         ->processed_items->toBe(1)
         ->failed_at->toBeNull()
         ->exception->toBeNull()
-        ->and(Progress::query()->count())->toBe(1)
+        ->and(Run::query()->count())->toBe(1)
         ->and(DB::table('failed_jobs')->count())->toBe(0);
 });
 
-it('restarts failed progress when original payloads are pushed directly onto the queue', function () {
+it('restarts failed run when original payloads are pushed directly onto the queue', function () {
     Schema::create('jobs', function (Blueprint $table) {
         $table->bigIncrements('id');
         $table->string('queue')->index();
@@ -246,14 +246,14 @@ it('restarts failed progress when original payloads are pushed directly onto the
         ],
     ]);
 
-    $progress = Progress::start();
-    MiddlewareProgressJob::dispatch($progress);
+    $run = Run::start();
+    MiddlewareRunJob::dispatch($run);
 
     $payload = json_decode(DB::table('jobs')->value('payload'), true);
     DB::table('jobs')->delete();
 
-    $progress->missed(metadata: ['row' => 1]);
-    $progress->fail();
+    $run->missed(metadata: ['row' => 1]);
+    $run->fail();
 
     $payload['retry_of'] = $payload['uuid'];
     $payload['uuid'] = (string) Str::uuid();
@@ -268,61 +268,61 @@ it('restarts failed progress when original payloads are pushed directly onto the
 
     Event::assertNotDispatched(JobRetryRequested::class);
 
-    expect($progress->refresh())
-        ->status->toBe(ProgressStatus::Completed)
+    expect($run->refresh())
+        ->status->toBe(RunStatus::Completed)
         ->processed_items->toBe(1)
         ->failed_items->toBe(0)
         ->failed_at->toBeNull()
-        ->and($progress->items)->toHaveCount(0)
-        ->and(Progress::query()->count())->toBe(1);
+        ->and($run->items)->toHaveCount(0)
+        ->and(Run::query()->count())->toBe(1);
 });
 
-it('skips completed and cancelled jobs when both middleware are registered', function (string $transition, ProgressStatus $status) {
-    $progress = Progress::start();
-    $progress->missed(metadata: ['row' => 1]);
-    $progress->{$transition}();
+it('skips completed and cancelled jobs when both middleware are registered', function (string $transition, RunStatus $status) {
+    $run = Run::start();
+    $run->missed(metadata: ['row' => 1]);
+    $run->{$transition}();
 
-    $attributes = $progress->fresh()->getAttributes();
+    $attributes = $run->fresh()->getAttributes();
 
-    Queue::connection('sync')->push(new MiddlewareProgressJob($progress));
+    Queue::connection('sync')->push(new MiddlewareRunJob($run));
 
-    expect($progress->fresh()->getAttributes())->toBe($attributes)
-        ->and($progress->fresh()->status)->toBe($status)
-        ->and($progress->items)->toHaveCount(1);
+    expect($run->fresh()->getAttributes())->toBe($attributes)
+        ->and($run->fresh()->status)->toBe($status)
+        ->and($run->items)->toHaveCount(1);
 })->with([
-    'completed' => ['complete', ProgressStatus::Completed],
-    'cancelled' => ['cancel', ProgressStatus::Cancelled],
+    'completed' => ['complete', RunStatus::Completed],
+    'cancelled' => ['cancel', RunStatus::Cancelled],
 ]);
 
-class MiddlewareProgressJob implements ShouldQueue
+class MiddlewareRunJob implements ShouldQueue
 {
     use Queueable;
 
     public function __construct(
-        public Progress $progress
+        public Run $run
     ) {}
 
     public function middleware(): array
     {
         return [
-            new RestartFailedProgress($this->progress),
-            new SkipIfProgressFinished($this->progress),
+            new RestartFailedRun($this->run),
+            new SkipIfRunFinished($this->run),
         ];
     }
 
     public function handle(): void
     {
-        $this->progress->advance();
+        $this->run->advance();
 
         if (config('progress-testing.fail', false)) {
             throw new RuntimeException('Unable to finish sync');
         }
 
-        $this->progress->complete();
+        $this->run->complete();
     }
 
     public function failed(?Throwable $exception): void
     {
-        $this->progress->fail($exception);
+        $this->run->fail($exception);
     }
 }

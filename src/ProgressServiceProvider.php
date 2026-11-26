@@ -2,7 +2,7 @@
 
 namespace DirectoryTree\Progress;
 
-use DirectoryTree\Progress\Queue\ProgressTracker;
+use DirectoryTree\Progress\Queue\RunTracker;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Queue;
@@ -15,7 +15,7 @@ class ProgressServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->app->singleton(ProgressTracker::class);
+        $this->app->singleton(RunTracker::class);
     }
 
     /**
@@ -23,7 +23,7 @@ class ProgressServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        $tracker = $this->app->make(ProgressTracker::class);
+        $tracker = $this->app->make(RunTracker::class);
 
         Queue::createPayloadUsing([$tracker, 'createPayload']);
 
