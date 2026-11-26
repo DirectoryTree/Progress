@@ -600,13 +600,14 @@ class ImportInbox implements ShouldQueue, ShouldBeEncrypted
 }
 ```
 
-Only the message job advances the run, after the application's importer succeeds:
+Only the message job advances the run, after the application's importer succeeds. Its middleware skips finished runs; the check in `handle()` also skips the import if the batch itself was cancelled:
 
 ```php
 namespace App\Jobs;
 
 use App\Models\Mailbox;
 use App\Services\MessageImporter;
+use DirectoryTree\Progress\Middleware\SkipIfRunFinished;
 use DirectoryTree\Progress\Models\Run;
 use Illuminate\Bus\Batchable;
 use Illuminate\Foundation\Queue\Queueable;
@@ -622,6 +623,11 @@ class ImportMessage implements ShouldQueue, ShouldBeEncrypted
         public int $uid,
         public Run $run,
     ) {}
+
+    public function middleware(): array
+    {
+        return [new SkipIfRunFinished($this->run)];
+    }
 
     public function handle(MessageImporter $importer): void
     {
