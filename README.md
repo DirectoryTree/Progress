@@ -376,6 +376,7 @@ The interface opts the job into owning the run's entire lifecycle:
 - Successful processing completes the run automatically, after `handle()` and the surrounding middleware have returned.
 - Releasing the job leaves the run active. Automatic attempts preserve its existing progress and ledger.
 - A terminal job failure marks the run failed and stores the exception. You don't need a `failed()` method, but your own callback still runs if you define one.
+- If Laravel discards the job because a serialized model is missing and `deleteWhenMissingModels` is enabled, the run keeps its existing status. A run that has never started stays pending.
 - Executing a previously failed run clears its counters and ledger, then restarts the same record. This works with `queue:retry` and Horizon retries without relying on retry events or attempt numbers.
 - Completed and cancelled runs skip execution. Cancellation during `handle()` is not overwritten by automatic completion.
 
@@ -418,6 +419,8 @@ The model is attached before serialization so the original payload always contai
 Use this integration for one job that owns one run. Child jobs contributing to shared progress should receive the model through their constructor and manage progress explicitly instead. Restarting only resets the package's records, not external side effects; automatic attempts still require checkpoints or idempotent work.
 
 The integration runs through Laravel's queue, including `dispatchSync()`. Calling `handle()` directly or using `Bus::dispatchNow()` bypasses it. Faked dispatches do not create runs.
+
+Progress records completion after Laravel has finished processing the job. An exception during that write propagates to Laravel, and the run may still show as running even though the work finished. Once you've verified that the work succeeded, you can call `complete()` on the run to reconcile its status.
 
 Creating a run is a database write before the payload is pushed. For transactional dispatch, keep the model on the same database connection as the transaction and use `afterCommit()`. A rolled-back dispatch then rolls back the pending record too. A failed queue push outside a transaction may leave a pending run; the package does not remove it automatically.
 

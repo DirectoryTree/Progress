@@ -153,7 +153,7 @@ class Run extends Model
      */
     public function items(): HasMany
     {
-        return $this->hasMany(RunItem::class);
+        return $this->hasMany(RunItem::class, 'run_id');
     }
 
     /**
@@ -302,6 +302,10 @@ class Run extends Model
      */
     public function advance(int $amount = 1): int
     {
+        if (! $this->exists) {
+            throw new InvalidArgumentException('The run must be saved before advancing it.');
+        }
+
         return $this->increment('processed_items', $amount);
     }
 

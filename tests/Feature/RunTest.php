@@ -34,6 +34,18 @@ it('advances progress by one or by a batch without recording ledger entries', fu
         ->and($run->items()->count())->toBe(0);
 });
 
+it('does not change other run counters when advancing an unsaved run', function (string $method) {
+    $first = Run::start(total: 10);
+    $second = Run::start(total: 5);
+    $unsaved = new Run;
+
+    expect(fn () => $unsaved->{$method}())
+        ->toThrow(InvalidArgumentException::class, 'The run must be saved before advancing it.');
+
+    expect($first->fresh()->processedItems())->toBe(0)
+        ->and($second->fresh()->processedItems())->toBe(0);
+})->with(['advance', 'record']);
+
 it('stores runs and their ledger using the run tables and foreign key', function () {
     $run = Run::start();
     $article = Article::create();
@@ -51,6 +63,28 @@ it('stores runs and their ledger using the run tables and foreign key', function
     $run->delete();
 
     expect(RunItem::count())->toBe(0);
+});
+
+it('records and clears ledger items for a custom run model', function () {
+    $run = ExtendedRun::start();
+    $other = Run::start();
+    $article = Article::create();
+
+    $recorded = $run->record($article);
+    $missed = $run->missed(new RuntimeException('Import failed'));
+    $other->record($article);
+
+    expect($recorded->run_id)->toBe($run->getKey())
+        ->and($missed->run_id)->toBe($run->getKey())
+        ->and($run->items()->count())->toBe(2);
+
+    $run->fail();
+    $run->restartIfFailed();
+
+    expect($run->status)->toBe(RunStatus::Running)
+        ->and($run->processedItems())->toBe(0)
+        ->and($run->items()->count())->toBe(0)
+        ->and($other->items()->count())->toBe(1);
 });
 
 it('starts progress', function () {
@@ -658,6 +692,11 @@ class Article extends Model
     use HasRuns;
 
     protected $guarded = [];
+}
+
+class ExtendedRun extends Run
+{
+    protected $table = 'runs';
 }
 
 enum RunName: string

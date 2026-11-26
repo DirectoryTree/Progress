@@ -5,13 +5,9 @@ use DirectoryTree\Progress\Middleware\RestartFailedRun;
 use DirectoryTree\Progress\Middleware\SkipIfRunFinished;
 use DirectoryTree\Progress\Models\Run;
 use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Queue\Events\JobRetryRequested;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 use function Pest\Laravel\artisan;
@@ -155,40 +151,8 @@ it('propagates job exceptions without failing or resetting active progress', fun
 });
 
 it('preserves automatic queue progress and restarts after queue retry', function () {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
-
-    Schema::create('failed_jobs', function (Blueprint $table) {
-        $table->id();
-        $table->string('uuid')->unique();
-        $table->text('connection');
-        $table->text('queue');
-        $table->longText('payload');
-        $table->longText('exception');
-        $table->timestamp('failed_at')->useCurrent();
-    });
-
     config([
         'queue.default' => 'database',
-        'queue.connections.database' => [
-            'driver' => 'database',
-            'connection' => 'testing',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-        ],
-        'queue.failed' => [
-            'driver' => 'database-uuids',
-            'database' => 'testing',
-            'table' => 'failed_jobs',
-        ],
         'progress-testing.fail' => true,
     ]);
 
@@ -205,12 +169,11 @@ it('preserves automatic queue progress and restarts after queue retry', function
         ->and(DB::table('failed_jobs')->count())->toBe(1);
 
     config(['progress-testing.fail' => false]);
-    Event::fake([JobRetryRequested::class]);
 
     artisan('queue:retry', ['id' => [DB::table('failed_jobs')->value('uuid')]])
         ->assertExitCode(0);
 
-    Event::assertDispatched(JobRetryRequested::class);
+    expect($run->fresh()->status)->toBe(RunStatus::Failed);
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0])
         ->assertExitCode(0);
@@ -225,26 +188,7 @@ it('preserves automatic queue progress and restarts after queue retry', function
 });
 
 it('restarts failed run when original payloads are pushed directly onto the queue', function () {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
-
-    config([
-        'queue.default' => 'database',
-        'queue.connections.database' => [
-            'driver' => 'database',
-            'connection' => 'testing',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-        ],
-    ]);
+    config(['queue.default' => 'database']);
 
     $run = Run::start();
     MiddlewareRunJob::dispatch($run);
@@ -259,14 +203,10 @@ it('restarts failed run when original payloads are pushed directly onto the queu
     $payload['uuid'] = (string) Str::uuid();
     $payload['attempts'] = 0;
 
-    Event::fake([JobRetryRequested::class]);
-
     Queue::connection('database')->pushRaw(json_encode($payload), 'default');
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0])
         ->assertExitCode(0);
-
-    Event::assertNotDispatched(JobRetryRequested::class);
 
     expect($run->refresh())
         ->status->toBe(RunStatus::Completed)

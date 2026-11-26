@@ -9,38 +9,19 @@ use Illuminate\Contracts\Queue\ShouldBeEncrypted;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Queue\Events\JobRetryRequested;
+use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 use function Pest\Laravel\artisan;
 
 it('attaches a pending progress before serializing the job', function () {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
-
-    config(['queue.connections.database' => [
-        'driver' => 'database',
-        'connection' => 'testing',
-        'table' => 'jobs',
-        'queue' => 'default',
-        'retry_after' => 90,
-    ]]);
-
     $job = new TrackedRunJob;
+
+    expect($job->getRun())->toBeNull();
 
     Queue::connection('database')->push($job);
 
@@ -80,26 +61,9 @@ it('automatically starts and completes progress on the sync queue', function () 
 });
 
 it('only creates progress for unique jobs that are actually dispatched', function () {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
-
     config([
         'cache.default' => 'array',
         'queue.default' => 'database',
-        'queue.connections.database' => [
-            'driver' => 'database',
-            'connection' => 'testing',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-        ],
     ]);
 
     UniqueTrackedRunJob::dispatch();
@@ -253,26 +217,57 @@ it('does not complete active progress when earlier middleware skips handling', f
         ->and(config('progress-testing.status'))->toBeNull();
 });
 
-it('preserves counters when a job is released or retried automatically', function (string $action) {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
+it('leaves the run pending when Laravel discards the job because a model is missing', function () {
+    config(['queue.default' => 'database']);
+
+    $dependency = Run::create();
+
+    DiscardsMissingModelTrackedRunJob::dispatch($dependency);
+
+    $dependency->delete();
+
+    artisan('queue:work', ['--once' => true, '--sleep' => 0])
+        ->assertExitCode(0);
+
+    expect(Run::sole())
+        ->status->toBe(RunStatus::Pending)
+        ->started_at->toBeNull()
+        ->failed_at->toBeNull()
+        ->processed_items->toBe(0)
+        ->and(config('progress-testing.status'))->toBeNull()
+        ->and(DB::table('jobs')->count())->toBe(0);
+});
+
+it('propagates a failed completion write after the original job finishes', function () {
+    config(['queue.default' => 'database']);
+
+    $attempts = 0;
+
+    Run::updating(function (Run $run) use (&$attempts) {
+        if ($run->isDirty('completed_at')) {
+            $attempts++;
+
+            throw new RuntimeException('Completion write failed');
+        }
     });
 
+    TrackedRunJob::dispatch();
+
+    $job = Queue::connection('database')->pop();
+
+    expect(fn () => app('queue.worker')->process('database', $job, new WorkerOptions(maxTries: 3)))
+        ->toThrow(RuntimeException::class, 'Completion write failed');
+
+    expect($attempts)->toBe(1)
+        ->and(Run::sole())
+        ->status->toBe(RunStatus::Running)
+        ->processed_items->toBe(1)
+        ->and(DB::table('jobs')->count())->toBe(0);
+});
+
+it('preserves counters when a job is released or retried automatically', function (string $action) {
     config([
         'queue.default' => 'database',
-        'queue.connections.database' => [
-            'driver' => 'database',
-            'connection' => 'testing',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-        ],
         'progress-testing.action' => $action,
     ]);
 
@@ -306,41 +301,9 @@ it('preserves counters when a job is released or retried automatically', functio
 })->with(['release', 'throw']);
 
 it('restarts the same progress after terminal failure and queue retry', function (string $jobClass) {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
-
-    Schema::create('failed_jobs', function (Blueprint $table) {
-        $table->id();
-        $table->string('uuid')->unique();
-        $table->text('connection');
-        $table->text('queue');
-        $table->longText('payload');
-        $table->longText('exception');
-        $table->timestamp('failed_at')->useCurrent();
-    });
-
     config([
         'app.key' => 'base64:'.base64_encode(random_bytes(32)),
         'queue.default' => 'database',
-        'queue.connections.database' => [
-            'driver' => 'database',
-            'connection' => 'testing',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-        ],
-        'queue.failed' => [
-            'driver' => 'database-uuids',
-            'database' => 'testing',
-            'table' => 'failed_jobs',
-        ],
         'progress-testing.action' => 'throw',
     ]);
 
@@ -381,26 +344,9 @@ it('restarts the same progress after terminal failure and queue retry', function
 })->with([TrackedRunJob::class, EncryptedTrackedRunJob::class]);
 
 it('restarts progress when original payloads are replayed with a new queue uuid', function (string $jobClass) {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
-
     config([
         'app.key' => 'base64:'.base64_encode(random_bytes(32)),
         'queue.default' => 'database',
-        'queue.connections.database' => [
-            'driver' => 'database',
-            'connection' => 'testing',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-        ],
     ]);
 
     $jobClass::dispatch();
@@ -416,14 +362,10 @@ it('restarts progress when original payloads are replayed with a new queue uuid'
     $payload['uuid'] = (string) Str::uuid();
     $payload['attempts'] = 0;
 
-    Event::fake([JobRetryRequested::class]);
-
     Queue::connection('database')->pushRaw(json_encode($payload), 'default');
 
     artisan('queue:work', ['--once' => true, '--sleep' => 0])
         ->assertExitCode(0);
-
-    Event::assertNotDispatched(JobRetryRequested::class);
 
     expect($run->refresh())
         ->status->toBe(RunStatus::Completed)
@@ -435,24 +377,6 @@ it('restarts progress when original payloads are replayed with a new queue uuid'
 })->with([TrackedRunJob::class, EncryptedTrackedRunJob::class]);
 
 it('rolls back pending progress creation with an after-commit database dispatch', function () {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
-
-    config(['queue.connections.database' => [
-        'driver' => 'database',
-        'connection' => 'testing',
-        'table' => 'jobs',
-        'queue' => 'default',
-        'retry_after' => 90,
-    ]]);
-
     DB::beginTransaction();
 
     Queue::connection('database')->push((new TrackedRunJob)->afterCommit());
@@ -471,31 +395,18 @@ it('dispatches and processes the pending progress after a transaction commits', 
         'database.connections.progress-transactions' => config('database.connections.testing'),
         'database.default' => 'progress-transactions',
         'queue.default' => 'database',
-        'queue.connections.database' => [
-            'driver' => 'database',
-            'connection' => 'progress-transactions',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-        ],
+        'queue.connections.database.connection' => 'progress-transactions',
     ]);
 
     artisan('migrate', [
         '--database' => 'progress-transactions',
-        '--path' => __DIR__.'/../../database/migrations',
+        '--path' => [
+            ...app('migrator')->paths(),
+            __DIR__.'/../../database/migrations',
+        ],
         '--realpath' => true,
         '--force' => true,
     ])->assertExitCode(0);
-
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
 
     DB::beginTransaction();
 
@@ -521,9 +432,9 @@ it('dispatches and processes the pending progress after a transaction commits', 
 });
 
 it('creates independent managed progress for chained jobs', function () {
-    config(['queue.default' => 'sync']);
-
-    Bus::chain([new TrackedRunJob, new TrackedRunJob])->dispatch();
+    Bus::chain([new TrackedRunJob, new TrackedRunJob])
+        ->onConnection('sync')
+        ->dispatch();
 
     expect(Run::count())->toBe(2)
         ->and(Run::completed()->count())->toBe(2)
@@ -576,25 +487,8 @@ it('tracks custom progress models on their configured connection', function (?st
 ]);
 
 it('fails pending progress when queue attempts are exhausted before handling', function () {
-    Schema::create('jobs', function (Blueprint $table) {
-        $table->bigIncrements('id');
-        $table->string('queue')->index();
-        $table->longText('payload');
-        $table->unsignedTinyInteger('attempts');
-        $table->unsignedInteger('reserved_at')->nullable();
-        $table->unsignedInteger('available_at');
-        $table->unsignedInteger('created_at');
-    });
-
     config([
         'queue.default' => 'database',
-        'queue.connections.database' => [
-            'driver' => 'database',
-            'connection' => 'testing',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'retry_after' => 90,
-        ],
         'queue.failed.driver' => null,
     ]);
 
@@ -666,6 +560,15 @@ class TrackedRunJob implements ShouldQueue, TracksRun
 }
 
 class EncryptedTrackedRunJob extends TrackedRunJob implements ShouldBeEncrypted {}
+
+class DiscardsMissingModelTrackedRunJob extends TrackedRunJob
+{
+    public bool $deleteWhenMissingModels = true;
+
+    public function __construct(
+        public Run $dependency
+    ) {}
+}
 
 class UniqueTrackedRunJob extends TrackedRunJob implements ShouldBeUnique {}
 

@@ -4,8 +4,10 @@ namespace DirectoryTree\Progress\Tests;
 
 use DirectoryTree\Progress\ProgressServiceProvider;
 use Illuminate\Foundation\Application;
+use Orchestra\Testbench\Attributes\WithMigration;
 use Orchestra\Testbench\TestCase as Orchestra;
 
+#[WithMigration('queue')]
 abstract class TestCase extends Orchestra
 {
     /**
@@ -35,6 +37,9 @@ abstract class TestCase extends Orchestra
             'prefix' => '',
             'foreign_key_constraints' => true,
         ]);
+
+        $app['config']->set('queue.connections.database.connection', 'testing');
+        $app['config']->set('queue.failed.database', 'testing');
     }
 
     /**
