@@ -356,9 +356,9 @@ class Run extends Model
     }
 
     /**
-     * Advance the processed item count.
+     * Advance the processed item count, including any failures in the batch.
      */
-    public function advance(int $amount = 1): int
+    public function advance(int $amount = 1, int $failed = 0): int
     {
         if (! $this->exists) {
             throw new InvalidArgumentException('The run must be saved before advancing it.');
@@ -368,12 +368,18 @@ class Run extends Model
             throw new InvalidArgumentException('The amount must not be negative.');
         }
 
-        $updated = $this->increment('processed_items', $amount);
+        if ($failed < 0 || $failed > $amount) {
+            throw new InvalidArgumentException('The failed count must be between zero and the processed amount.');
+        }
 
-        if ($updated === false) {
-            $this->refresh();
+        if ($amount === 0) {
+            return 0;
+        }
 
-            throw new RuntimeException('The processed item count could not be updated.');
+        $updated = $this->incrementCounters($amount, $failed);
+
+        if ($updated) {
+            $this->syncCounters($amount, $failed);
         }
 
         return $updated;
@@ -415,7 +421,7 @@ class Run extends Model
     ): ?RunItem {
         if (! $exception && ! $item && ! $metadata) {
             if ($count) {
-                $this->incrementFailed();
+                $this->advance(failed: 1);
             }
 
             return null;
@@ -435,36 +441,6 @@ class Run extends Model
     }
 
     /**
-     * Increment the failed item count.
-     */
-    public function incrementFailed(int $amount = 1): int
-    {
-        if (! $this->exists) {
-            throw new InvalidArgumentException('The run must be saved before incrementing its failure count.');
-        }
-
-        if ($amount < 0) {
-            throw new InvalidArgumentException('The amount must not be negative.');
-        }
-
-        $updated = $this->newQuery()
-            ->whereKey($this)
-            ->toBase()
-            ->incrementEach([
-                'processed_items' => $amount,
-                'failed_items' => $amount,
-            ], [
-                $this->getUpdatedAtColumn() => $this->freshTimestampString(),
-            ]);
-
-        if ($updated) {
-            $this->refresh();
-        }
-
-        return $updated;
-    }
-
-    /**
      * Store a ledger item and its optional counter update together.
      */
     protected function storeItem(array $attributes, bool $count): RunItem
@@ -473,9 +449,13 @@ class Run extends Model
             throw new InvalidArgumentException('The run must be saved before recording items.');
         }
 
-        [$item, $run] = $this->getConnection()->transaction(function () use ($attributes, $count) {
-            // Lock the parent before the insert takes a shared foreign key lock.
-            $run = $count ? $this->newModelQuery()->lockForUpdate()->findOrFail($this->getKey()) : null;
+        $failed = $attributes['status'] === RunItemStatus::Failed ? 1 : 0;
+
+        $item = $this->getConnection()->transaction(function () use ($attributes, $count, $failed) {
+            // Update the parent before the insert takes a shared foreign key lock.
+            if ($count && ! $this->incrementCounters(1, $failed)) {
+                throw new RuntimeException('The run counters could not be updated.');
+            }
 
             $item = $this->items()->make($attributes);
 
@@ -483,27 +463,37 @@ class Run extends Model
                 throw new RuntimeException('The run item could not be recorded.');
             }
 
-            if ($run) {
-                $updated = $item->status === RunItemStatus::Failed ? $run->incrementFailed() : $run->advance();
-
-                if (! $updated) {
-                    throw new RuntimeException('The run counters could not be updated.');
-                }
-            }
-
-            return [$item, $run];
+            return $item;
         });
 
-        if ($run) {
-            $this->processed_items = $run->processed_items;
-            $this->failed_items = $run->failed_items;
-
-            $this->syncOriginalAttributes([
-                'processed_items',
-                'failed_items',
-            ]);
+        if ($count) {
+            $this->syncCounters(1, $failed);
         }
 
         return $item;
+    }
+
+    /**
+     * Increment both counters in a single database update.
+     */
+    protected function incrementCounters(int $amount, int $failed): int
+    {
+        return $this->newQuery()->whereKey($this->getKey())->toBase()->incrementEach([
+            'processed_items' => $amount,
+            'failed_items' => $failed,
+        ], $this->usesTimestamps() && $this->getUpdatedAtColumn() ? [
+            $this->getUpdatedAtColumn() => $this->freshTimestampString(),
+        ] : []);
+    }
+
+    /**
+     * Synchronize committed counters without discarding other pending edits.
+     */
+    protected function syncCounters(int $amount, int $failed): void
+    {
+        $this->processed_items = $this->getRawOriginal('processed_items') + $amount;
+        $this->failed_items = $this->getRawOriginal('failed_items') + $failed;
+
+        $this->syncOriginalAttributes(['processed_items', 'failed_items']);
     }
 }

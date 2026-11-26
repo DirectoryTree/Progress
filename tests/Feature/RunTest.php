@@ -48,16 +48,34 @@ it('does not change other run counters when advancing an unsaved run', function 
         ->and($second->fresh()->processedItems())->toBe(0);
 })->with(['advance', 'record']);
 
-it('does not count failures on an unsaved run with an existing run ID', function (string $method) {
+it('counts failures as part of a batch without creating ledger entries', function () {
+    $run = Run::start(total: 14);
+    $stale = $run->fresh();
+
+    expect($run->advance(10, failed: 2))->toBe(1)
+        ->and($run->processed_items)->toBe(10)
+        ->and($run->failed_items)->toBe(2);
+
+    $stale->advance(3, failed: 3);
+    $run->missed();
+
+    expect($run->refresh())
+        ->processed_items->toBe(14)
+        ->failed_items->toBe(6)
+        ->and($run->items()->count())->toBe(0);
+});
+
+it('does not count failures on an unsaved run with an existing run ID', function () {
     $run = Run::start();
     $unsaved = new Run(['id' => $run->getKey()]);
 
-    expect(fn () => $unsaved->{$method}())->toThrow(InvalidArgumentException::class);
+    expect(fn () => $unsaved->advance(3, failed: 2))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => $unsaved->missed())->toThrow(InvalidArgumentException::class);
 
     expect($run->refresh())
         ->processed_items->toBe(0)
         ->failed_items->toBe(0);
-})->with(['incrementFailed', 'missed']);
+});
 
 it('stores runs and their ledger using the run tables and foreign key', function () {
     $run = Run::start();
@@ -129,17 +147,37 @@ it('rejects a negative total before creating a run', function () {
         ->and(Run::count())->toBe(0);
 });
 
-it('rejects negative counter amounts and allows empty batches', function (string $method) {
-    $run = Run::start(total: 0);
+it('rejects invalid batch counts before updating either counter', function (int $amount, int $failed) {
+    $run = Run::start();
 
-    expect(fn () => $run->{$method}(-1))->toThrow(InvalidArgumentException::class);
-    $run->{$method}(0);
-
-    expect($run->fresh())
+    expect(fn () => $run->advance($amount, failed: $failed))->toThrow(InvalidArgumentException::class)
+        ->and($run->fresh())
         ->processed_items->toBe(0)
-        ->failed_items->toBe(0)
-        ->percentage()->toBe(0);
-})->with(['advance', 'incrementFailed']);
+        ->failed_items->toBe(0);
+})->with([[-1, 0], [1, -1], [2, 3], [0, 1]]);
+
+it('does not update the run for an empty batch', function () {
+    $run = Run::start(total: 0);
+    $before = $run->fresh()->getAttributes();
+
+    Run::updating(fn () => throw new RuntimeException('Unexpected empty batch update.'));
+
+    expect($run->advance(0))->toBe(0)
+        ->and($run->fresh()->getAttributes())->toBe($before);
+});
+
+it('advances counters without firing run save events or changing unrelated edits', function (int $failed) {
+    $run = Run::start(name: 'Original');
+    $run->name = 'Draft';
+    Run::saving(fn () => throw new RuntimeException('Unexpected run save.'));
+    Run::updating(fn () => throw new RuntimeException('Unexpected run update.'));
+
+    expect($run->advance(3, failed: $failed))->toBe(1)
+        ->and($run->processed_items)->toBe(3)
+        ->and($run->failed_items)->toBe($failed)
+        ->and($run->getDirty())->toBe(['name' => 'Draft'])
+        ->and($run->fresh()->name)->toBe('Original');
+})->with([0, 2]);
 
 it('begins a pending run once without resetting its progress', function () {
     $run = ExtendedRun::create(['name' => 'Import contacts']);
@@ -710,27 +748,35 @@ it('does not count or return a ledger entry when its creation is vetoed', functi
     expect(fn () => $run->{$method}(metadata: ['row' => 1], count: $count))->toThrow(RuntimeException::class);
 
     expect($run->items()->count())->toBe(0)
+        ->and($run->processed_items)->toBe(0)
+        ->and($run->failed_items)->toBe(0)
         ->and($run->fresh())
         ->processed_items->toBe(0)
         ->failed_items->toBe(0);
 })->with(['record', 'missed'])->with([true, false]);
 
-it('rolls back a ledger entry when its counter update fails', function (string $event) {
+it('updates the parent before inserting a counted item and rolls back both on failure', function (string $method) {
     $run = Run::start();
     $run->advance(2);
+    $run->name = 'Draft';
+    $failed = $method === 'missed' ? 1 : 0;
 
-    if ($event === 'updating') {
-        Run::updating(fn () => false);
-    } else {
-        Run::updated(fn () => throw new RuntimeException('Counter update failed.'));
-    }
+    Run::saving(fn () => throw new RuntimeException('Unexpected run save.'));
+    RunItem::creating(function () use ($run, $failed) {
+        expect($run->fresh())->processed_items->toBe(3)->failed_items->toBe($failed);
+        expect($run->processed_items)->toBe(2);
+    });
+    RunItem::created(fn () => throw new RuntimeException('Ledger write failed.'));
 
-    expect(fn () => $run->record(metadata: ['row' => 1]))->toThrow(RuntimeException::class);
+    expect(fn () => $run->{$method}(metadata: ['row' => 1]))->toThrow(RuntimeException::class, 'Ledger write failed.');
 
     expect($run->processedItems())->toBe(2)
+        ->and($run->failed_items)->toBe(0)
+        ->and($run->getDirty())->toBe(['name' => 'Draft'])
         ->and($run->fresh()->processedItems())->toBe(2)
+        ->and($run->fresh()->failed_items)->toBe(0)
         ->and($run->items()->count())->toBe(0);
-})->with(['updating', 'updated']);
+})->with(['record', 'missed']);
 
 it('does not retain a missed item if the counter update affects no rows', function () {
     $run = ExtendedRun::start();

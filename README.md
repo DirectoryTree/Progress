@@ -127,13 +127,13 @@ Start with count-only tracking. Add ledger entries when you need to inspect indi
 | Count and ledger | `$run->record($contact)`              | `$run->missed($exception, item: $contact)`              |
 | Ledger only      | `$run->record($contact, count: false)` | `$run->missed($exception, item: $contact, count: false)` |
 
-Use count-only tracking for high-volume work where per-item history is unnecessary. Both `advance()` and `incrementFailed()` accept an amount for batches:
+Use `advance()` to count a batch without writing ledger entries. The first argument is the total processed, **including** failures. The optional `failed` count must be between zero and that total:
 
 ```php
-$run->advance($successful);
-
-$run->incrementFailed($failed);
+$run->advance(10, failed: 2); // 10 processed: 8 succeeded and 2 failed.
 ```
+
+`advance(0)` returns `0` without writing. Non-empty batches increment both counters in one database update without firing `Run` model events or saving unrelated edits. The run instance reflects its own increments; use `$run->fresh()` to read totals that include other workers' progress.
 
 Use ledger-only tracking when a resource should appear in the history but does not represent another unit of progress. For example, one imported row may count once while creating several related models:
 
@@ -159,14 +159,14 @@ try {
 
 Keep these behaviors in mind:
 
-- `incrementFailed()` increments both the processed and failed counters.
+- `missed()` without details is shorthand for `advance(failed: 1)`: one processed, one failed, no ledger entry.
 - Ledger-only entries do not affect progress or aggregate helpers such as `hasFailures()`.
 - `advance()` creates no `RunItem`. Both `record()` and `missed()` are count-only when called without details.
 - Passing a model or non-empty metadata to `record()` creates a successful `RunItem`, even with `count: false`.
 - Passing an exception, model, or metadata to `missed()` creates a failed `RunItem`.
 - Count-only failures cannot retain a per-item exception or metadata because no ledger entry is created.
 - Counters and `$run->items()->count()` may differ intentionally.
-- Ledger entries require a saved run. When an entry also counts toward progress, both writes succeed together or neither is kept.
+- Ledger entries require a saved run. For counted entries, Progress updates the run counters before inserting the item in the same transaction. Both writes succeed or neither is kept. The item fires its usual Eloquent events.
 - Totals and counter increments may be zero but cannot be negative. Omit the total when it is unknown.
 - Calls are not idempotent. Repeating a counting call increments the counters again, while repeating a ledger-producing call creates another `RunItem`. Queue retries require application-level idempotency.
 - Progress does not reject counters that exceed `total_items`. In that case, `percentage()` remains capped at `100` and `pendingItems()` remains at `0`.
@@ -230,6 +230,8 @@ Run statuses are derived from their lifecycle timestamps, keeping those timestam
 Terminal transitions are idempotent and the first terminal state wins. Repeating the same transition returns `true` without changing its timestamp, while attempting a different terminal transition returns `false`. Use `restart()` to explicitly start the run again.
 
 If an Eloquent observer vetoes a lifecycle save by returning `false`, Progress throws a `RuntimeException`. A vetoed update leaves the run in its previous persisted state.
+
+Unlike counter increments, lifecycle transitions use normal Eloquent model saves.
 
 Restarting keeps the same run ID, name, type, total, subject, owner, and metadata:
 
