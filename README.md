@@ -295,6 +295,8 @@ When the total is unknown, `total_items`, `pendingItems()`, and `percentage()` r
 
 ## Ledger Items
 
+Each ledger entry stores its outcome as a string and the time it was recorded in `created_at`. Eloquent casts `$item->status` to `DirectoryTree\Progress\Enums\RunItemStatus`, either `RunItemStatus::Completed` or `RunItemStatus::Failed`. The parent run's lifecycle uses `RunStatus`; ledger items have no separate lifecycle timestamps or `updated_at`.
+
 Use `record()` when a processed item maps to a persisted Eloquent model:
 
 ```php

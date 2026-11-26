@@ -39,14 +39,12 @@ return new class extends Migration
             $table->id();
             $table->foreignId('run_id')->constrained()->cascadeOnDelete();
             $table->nullableMorphs('resource');
+            $table->string('status');
             $table->json('metadata')->nullable();
             $table->longText('exception')->nullable();
-            $table->timestamp('completed_at')->nullable();
-            $table->timestamp('failed_at')->nullable();
-            $table->timestamps();
+            $table->timestamp('created_at');
 
-            $table->index(['run_id', 'completed_at']);
-            $table->index(['run_id', 'failed_at']);
+            $table->index(['run_id', 'status', 'created_at']);
             $table->index(['run_id', 'created_at']);
         });
     }

@@ -2,15 +2,16 @@
 
 namespace DirectoryTree\Progress\Models;
 
-use DirectoryTree\Progress\Enums\RunStatus;
+use DirectoryTree\Progress\Enums\RunItemStatus;
 use DirectoryTree\Progress\Models\Builders\RunItemBuilder;
-use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 class RunItem extends Model
 {
+    public const UPDATED_AT = null;
+
     /**
      * The attributes that aren't mass assignable.
      *
@@ -26,9 +27,8 @@ class RunItem extends Model
     protected function casts(): array
     {
         return [
+            'status' => RunItemStatus::class,
             'metadata' => 'array',
-            'completed_at' => 'datetime',
-            'failed_at' => 'datetime',
         ];
     }
 
@@ -54,17 +54,5 @@ class RunItem extends Model
     public function resource(): MorphTo
     {
         return $this->morphTo();
-    }
-
-    /**
-     * Get the status derived from the lifecycle timestamps.
-     */
-    protected function status(): Attribute
-    {
-        return Attribute::get(fn () => match (true) {
-            ! is_null($this->failed_at) => RunStatus::Failed,
-            ! is_null($this->completed_at) => RunStatus::Completed,
-            default => RunStatus::Pending,
-        })->withoutObjectCaching();
     }
 }

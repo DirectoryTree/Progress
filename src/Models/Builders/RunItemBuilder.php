@@ -2,6 +2,7 @@
 
 namespace DirectoryTree\Progress\Models\Builders;
 
+use DirectoryTree\Progress\Enums\RunItemStatus;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
@@ -16,7 +17,7 @@ class RunItemBuilder extends Builder
      */
     public function completed(): static
     {
-        return $this->whereNotNull('completed_at');
+        return $this->where('status', RunItemStatus::Completed);
     }
 
     /**
@@ -24,6 +25,6 @@ class RunItemBuilder extends Builder
      */
     public function failed(): static
     {
-        return $this->whereNotNull('failed_at');
+        return $this->where('status', RunItemStatus::Failed);
     }
 }

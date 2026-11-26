@@ -3,6 +3,7 @@
 namespace DirectoryTree\Progress\Models;
 
 use BackedEnum;
+use DirectoryTree\Progress\Enums\RunItemStatus;
 use DirectoryTree\Progress\Enums\RunStatus;
 use DirectoryTree\Progress\Models\Builders\RunBuilder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -399,8 +400,8 @@ class Run extends Model
             'resource_type' => $item?->getMorphClass(),
             'resource_id' => $item?->getKey(),
             'metadata' => $metadata ?: null,
-            'completed_at' => $this->freshTimestamp(),
-        ], $count, failed: false);
+            'status' => RunItemStatus::Completed,
+        ], $count);
     }
 
     /**
@@ -429,8 +430,8 @@ class Run extends Model
             'resource_id' => $item?->getKey(),
             'exception' => $exception ? (string) $exception : null,
             'metadata' => $metadata ?: null,
-            'failed_at' => $this->freshTimestamp(),
-        ], $count, failed: true);
+            'status' => RunItemStatus::Failed,
+        ], $count);
     }
 
     /**
@@ -466,13 +467,13 @@ class Run extends Model
     /**
      * Store a ledger item and its optional counter update together.
      */
-    protected function storeItem(array $attributes, bool $count, bool $failed): RunItem
+    protected function storeItem(array $attributes, bool $count): RunItem
     {
         if (! $this->exists) {
             throw new InvalidArgumentException('The run must be saved before recording items.');
         }
 
-        [$item, $run] = $this->getConnection()->transaction(function () use ($attributes, $count, $failed) {
+        [$item, $run] = $this->getConnection()->transaction(function () use ($attributes, $count) {
             // Lock the parent before the insert takes a shared foreign key lock.
             $run = $count ? $this->newModelQuery()->lockForUpdate()->findOrFail($this->getKey()) : null;
 
@@ -483,7 +484,7 @@ class Run extends Model
             }
 
             if ($run) {
-                $updated = $failed ? $run->incrementFailed() : $run->advance();
+                $updated = $item->status === RunItemStatus::Failed ? $run->incrementFailed() : $run->advance();
 
                 if (! $updated) {
                     throw new RuntimeException('The run counters could not be updated.');

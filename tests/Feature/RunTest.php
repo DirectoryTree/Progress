@@ -1,6 +1,7 @@
 <?php
 
 use DirectoryTree\Progress\Concerns\HasRuns;
+use DirectoryTree\Progress\Enums\RunItemStatus;
 use DirectoryTree\Progress\Enums\RunStatus;
 use DirectoryTree\Progress\Models\Builders\RunBuilder;
 use DirectoryTree\Progress\Models\Builders\RunItemBuilder;
@@ -8,6 +9,7 @@ use DirectoryTree\Progress\Models\Run;
 use DirectoryTree\Progress\Models\RunItem;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
@@ -181,11 +183,10 @@ it('starts progress with backed enum names and types', function () {
         ->type->toBe('import');
 });
 
-it('derives statuses from lifecycle timestamps', function () {
+it('derives run status from lifecycle timestamps', function () {
     $run = Run::query()->create();
 
     expect(Schema::hasColumn('runs', 'status'))->toBeFalse()
-        ->and(Schema::hasColumn('run_items', 'status'))->toBeFalse()
         ->and($run->status)->toBe(RunStatus::Pending)
         ->and($run->processedItems())->toBe(0)
         ->and($run->hasFailures())->toBeFalse();
@@ -262,7 +263,7 @@ it('records missed models', function () {
     );
 
     expect($resource)
-        ->status->toBe(RunStatus::Failed)
+        ->status->toBe(RunItemStatus::Failed)
         ->resource->is($article)->toBeTrue();
 
     expect($run)
@@ -577,7 +578,7 @@ it('increments processed items when recording models', function () {
     $item = $run->record($article);
 
     expect($item)
-        ->status->toBe(RunStatus::Completed)
+        ->status->toBe(RunItemStatus::Completed)
         ->resource->is($article)->toBeTrue()
         ->and($run->refresh()->processed_items)->toBe(1);
 });
@@ -589,7 +590,7 @@ it('can record models without incrementing processed items', function () {
     $item = $run->record($article, count: false);
 
     expect($item)
-        ->status->toBe(RunStatus::Completed)
+        ->status->toBe(RunItemStatus::Completed)
         ->resource->is($article)->toBeTrue()
         ->and($run->refresh()->processed_items)->toBe(0)
         ->and($run->items)->toHaveCount(1);
@@ -603,8 +604,8 @@ it('records metadata without exposing progress item attributes', function () {
 
     expect($item)
         ->metadata->toBe(['source' => 'import'])
-        ->completed_at->not->toBeNull()
-        ->failed_at->toBeNull();
+        ->status->toBe(RunItemStatus::Completed)
+        ->created_at->not->toBeNull();
 });
 
 it('records successful metadata without a resource', function (bool $count) {
@@ -614,7 +615,7 @@ it('records successful metadata without a resource', function (bool $count) {
     expect($run->items()->sole()->is($item))->toBeTrue()
         ->and($item->refresh())
         ->metadata->toBe(['row' => 42])
-        ->status->toBe(RunStatus::Completed)
+        ->status->toBe(RunItemStatus::Completed)
         ->resource_type->toBeNull()
         ->resource_id->toBeNull()
         ->and($run->refresh()->processedItems())->toBe($count ? 1 : 0);
@@ -654,7 +655,7 @@ it('records missed items without a model', function () {
     );
 
     expect($item)
-        ->status->toBe(RunStatus::Failed)
+        ->status->toBe(RunItemStatus::Failed)
         ->resource_id->toBeNull()
         ->metadata->toBe(['row' => 1])
         ->and($run->refresh()->processed_items)->toBe(1)
@@ -681,7 +682,7 @@ it('can record missed items without incrementing counters', function () {
         count: false,
     );
 
-    expect($item->status)->toBe(RunStatus::Failed)
+    expect($item->status)->toBe(RunItemStatus::Failed)
         ->and($run->refresh()->processed_items)->toBe(0)
         ->and($run->failed_items)->toBe(0);
 });
@@ -755,6 +756,37 @@ it('queries progress by status', function () {
         ->and(Run::cancelled()->count())->toBe(1)
         ->and(Run::active()->count())->toBe(1);
 });
+
+it('records and queries item outcomes using a status and a single timestamp', function () {
+    $run = Run::start();
+    $completed = $run->record(metadata: ['row' => 1]);
+    $failed = $run->missed(metadata: ['row' => 2]);
+    Run::start()->missed(metadata: ['row' => 3]);
+
+    expect(Schema::getColumnListing('run_items'))
+        ->toContain('status', 'created_at')
+        ->not->toContain('completed_at', 'failed_at', 'updated_at');
+
+    expect($run->items()->completed()->sole()->is($completed))->toBeTrue()
+        ->and($run->items()->failed()->sole()->is($failed))->toBeTrue()
+        ->and($completed->fresh()->status)->toBe(RunItemStatus::Completed)
+        ->and($failed->fresh()->status)->toBe(RunItemStatus::Failed)
+        ->and($failed->fresh()->created_at)->not->toBeNull();
+});
+
+it('requires a status when creating a ledger entry', function () {
+    $run = Run::start();
+
+    expect(fn () => $run->items()->create())->toThrow(QueryException::class);
+    expect($run->items()->count())->toBe(0);
+});
+
+it('rejects run lifecycle states that are not item outcomes', function (string $status) {
+    $run = Run::start();
+
+    expect(fn () => $run->items()->create(['status' => $status]))->toThrow(ValueError::class);
+    expect($run->items()->count())->toBe(0);
+})->with(['pending', 'running', 'cancelled']);
 
 it('uses custom eloquent builders', function () {
     $run = Run::start();
