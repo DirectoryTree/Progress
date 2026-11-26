@@ -17,6 +17,13 @@ use Throwable;
 class Run extends Model
 {
     /**
+     * The attributes that aren't mass assignable.
+     *
+     * @var array<int, string>
+     */
+    protected $guarded = [];
+
+    /**
      * The model's default values for attributes.
      *
      * @var array<string, mixed>
@@ -25,13 +32,6 @@ class Run extends Model
         'processed_items' => 0,
         'failed_items' => 0,
     ];
-
-    /**
-     * The attributes that aren't mass assignable.
-     *
-     * @var array<int, string>
-     */
-    protected $guarded = [];
 
     /**
      * The attributes that should be cast.
